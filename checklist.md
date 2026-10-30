@@ -61,8 +61,12 @@ the process; auto-approving permissions defeats them.
    `USER VERIFY` block meeting the bar in **User verification block**. If you
    cannot verify a claim from a shell, say so explicitly.
 11. **Tick only after approval.** Change `[ ]` to `[x]` and commit
-   `Tnn: <summary> [<cli>:<id>]` only after the completion approval. If the repo is not a git repo, T01
-   initialises it on `master`.
+   `Tnn: <summary> [<cli>:<id>]` only after the completion approval. If the repo
+   is not a git repo, T01 initialises it on `master`.
+12. **Commit and push deliberately.** Stage explicit paths (never `git add -A`),
+   commit only after Gate 2 on the task branch, and push only when a remote
+   exists. Never force-push or amend a pushed commit. See
+   **Staging, commit, and push**.
 
 ### Approval gates
 
@@ -102,6 +106,7 @@ USER VERIFY — copy, paste, and run these yourself:
 Artifacts: <files or packages this task added or changed>
 Commit:   Tnn: <summary> [<cli>:<id>]   (on the task branch)
 Merge:    git switch master && git merge --ff-only task/tnn-slug
+Push:     git push -u origin task/tnn-slug && git push origin master
 Next:     T(nn+1) — <title>   (do not start it)
 ```
 
@@ -164,6 +169,45 @@ git merge --ff-only <branch>
   and report rather than resolving it alone.
 - Do not delete the task branch; the human decides when to prune.
 - Stay on `master` after merging so the next task branches from the right place.
+
+### Staging, commit, and push
+
+**Stage explicit paths — never `git add -A` or `git add .`.** This repo has
+untracked files that do not belong to any task (`chat.sh`, `opencode.sh`, editor
+leftovers). `git add -A` has already swept them into a commit once.
+
+```bash
+git status --short
+git add <every path you changed for this task>   # list them; no wildcards
+git diff --cached                                # read every line before committing
+```
+
+**Commit once, after `APPROVED COMPLETE Tnn`, on the task branch.** Message
+`Tnn: <summary> [<cli>:<id>]`. The tick and the code go in the same commit.
+
+**Push only if a remote exists**, and only after the commit:
+
+```bash
+if git remote get-url origin >/dev/null 2>&1; then
+  git push -u origin <branch>
+  git switch master
+  git merge --ff-only <branch>
+  git push origin master
+else
+  echo "no remote: local commit only"
+fi
+```
+
+- **Never force-push** and never rewrite pushed history (`--amend`, `rebase`,
+  `reset` on a pushed branch). If the push is rejected, stop and report.
+- **A failed push is not a failed task.** Commit locally, say the push failed and
+  why, and continue waiting for the next instruction.
+- **Never commit secrets.** Example configs hold placeholders only; real
+  `jwt_secret` values, tokens, and `*.db` files stay out of git (see
+  `.gitignore`).
+- **Working tree after the task:** only expected untracked files remain. If
+  `git status` shows something you cannot explain, report it instead of
+  committing it.
 
 ### Session & resume (works with any CLI)
 
@@ -349,8 +393,8 @@ go build ./...
 go test -v ./internal/testutil -run '^(TestTempConfig|TestFakeClock)$'
 ```
 **Done when:** both PASS; `grep -R 'os.Getenv("HOME")' internal/testutil` returns nothing.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e74cdb6d0ffe4oC5vwfKa9Nys8`
+**Resume:** `opencode run -s ses_e74cdb6d0ffe4oC5vwfKa9Nys8 "Resume T02 (Hermetic test harness). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T03 — Config & shared model types
 **Depends on:** T01
