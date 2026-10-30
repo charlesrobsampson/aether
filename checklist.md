@@ -383,7 +383,7 @@ go build ./...
 **Session:** `opencode:ses_e75ab3d3cffe4bV13UJE4hk8VI` (checklist.md readability for agents)
 **Resume:** `opencode run -s ses_e75ab3d3cffe4bV13UJE4hk8VI "Resume T01 (Workspace reset & full scaffold). Read plan.md and checklist.md, then continue."`
 
-### [ ] T02 — Hermetic test harness
+### [x] T02 — Hermetic test harness
 **Depends on:** T01
 **Branch:** `task/t02-hermetic-test-harness`
 **Write first:** `internal/testutil/testutil_test.go::TestTempConfig` — copies `examples/config` into `t.TempDir()`, sets `AETHER_CONFIG_DIR`, and confirms it is restored and `$HOME` is untouched; `TestFakeClock` — `Advance` fires registered timers exactly once and in order.
