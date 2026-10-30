@@ -1,0 +1,16 @@
+{
+  "prefixes": ["!"],
+  "timezone": "America/Chicago",
+  "muted": false,
+  "satellite_ids": {
+    "wind-predictor": "alice"
+  },
+  "aliases": {
+    "satellites": {
+      "wind": "wind-predictor"
+    },
+    "commands": {
+      "w": "fly"
+    }
+  }
+}

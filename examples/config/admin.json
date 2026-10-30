@@ -1,0 +1,6 @@
+{
+  "admins": ["+15555550101"],
+  "approved_numbers": ["+15555550101", "+15555550102"],
+  "denied_numbers": ["+15555550999"],
+  "approved_groups": ["group.example-opaque-id"]
+}

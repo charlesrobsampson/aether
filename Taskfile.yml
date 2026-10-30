@@ -1,0 +1,32 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build every package and the aether binary
+    cmds:
+      - go build ./...
+      - mkdir -p bin
+      - go build -o bin/aether ./cmd/aether
+
+  test:
+    desc: Run the test suite
+    cmds:
+      - go test ./...
+
+  fmt:
+    desc: Format Go sources
+    cmds:
+      - gofmt -w .
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  check:
+    desc: Build, verify formatting, vet, and test
+    cmds:
+      - task: build
+      - test -z "$(gofmt -l .)"
+      - task: vet
+      - task: test

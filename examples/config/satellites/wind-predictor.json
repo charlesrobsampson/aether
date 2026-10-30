@@ -1,0 +1,15 @@
+{
+  "name": "wind-predictor",
+  "trigger": "fly",
+  "endpoint": "http://127.0.0.1:9463",
+  "commands": [
+    {
+      "name": "fly",
+      "path": "/api/v1/predict/text",
+      "patterns": ["fly <station>"],
+      "args": [
+        { "name": "station", "type": "string" }
+      ]
+    }
+  ]
+}

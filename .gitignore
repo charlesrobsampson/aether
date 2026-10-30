@@ -1,0 +1,6 @@
+bin/
+data/
+*.db*
+.env
+go.work*
+coverage.out

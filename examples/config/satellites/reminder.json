@@ -1,0 +1,21 @@
+{
+  "name": "reminder",
+  "trigger": "remind",
+  "endpoint": "http://127.0.0.1:8091",
+  "commands": [
+    {
+      "name": "remind",
+      "path": "/remind",
+      "patterns": ["remind me <msg> in <num> <unit>"],
+      "args": [
+        { "name": "msg", "type": "string" },
+        { "name": "num", "type": "int" },
+        {
+          "name": "unit",
+          "type": "enum",
+          "enum": ["seconds", "minutes", "hours", "days"]
+        }
+      ]
+    }
+  ]
+}

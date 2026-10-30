@@ -1,0 +1,35 @@
+{
+  "server": {
+    "port": 8080,
+    "db_path": "./data/aether.db"
+  },
+  "persona": {
+    "name": "Aether",
+    "prefixes": ["!", "/", "Aether "]
+  },
+  "auth": {
+    "jwt_secret": "dev-only-change-me"
+  },
+  "limits": {
+    "rate_per_second": 1,
+    "burst": 5,
+    "queue_depth": 256
+  },
+  "default_provider": "signal",
+  "providers": {
+    "signal": {
+      "type": "msg",
+      "account": "+15555550100"
+    }
+  },
+  "schedules": [
+    {
+      "name": "morning_fly",
+      "cron": "0 7 * * 1-5",
+      "satellite": "wind-predictor",
+      "command": "fly",
+      "args": { "station": "FPS" },
+      "recipients": ["+15555550102"]
+    }
+  ]
+}
