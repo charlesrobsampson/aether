@@ -593,7 +593,7 @@ go test -v ./internal/scheduler -run '^(TestScheduler|TestCronNext)$'
 
 ## Phase 3 — HTTP API
 
-### [ ] T14 — `/receive` handler
+### [x] T14 — `/receive` handler
 **Depends on:** T03, T04, T06
 **Branch:** `task/t14-receive-handler`
 **Write first:** `internal/api/receive_test.go::TestReceiveHandler` — table: malformed JSON `400`, missing `sender`/`text` `400`, bad `X-Aether-Token` `401` when configured, valid `202`, denied sender `202` with no dispatch, unknown sender `202` and exactly one call to the injected approval callback.
@@ -603,8 +603,8 @@ go test -v ./internal/scheduler -run '^(TestScheduler|TestCronNext)$'
 go test -v ./internal/api -run '^TestReceiveHandler$'
 ```
 **Done when:** PASS.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6d77d4d5ffeiIifLPTz4ZHVow` (T14 /receive handler)
+**Resume:** `git switch task/t14-receive-handler && opencode run -s ses_e6d77d4d5ffeiIifLPTz4ZHVow "Resume T14 (/receive handler). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T15 — `/message` single recipient
 **Depends on:** T04, T07, T12, T14

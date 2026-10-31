@@ -26,7 +26,7 @@ func RoleOf(cfg *config.Config, phone string) Role {
 	if cfg == nil || phone == "" {
 		return Denied
 	}
-	if contains(cfg.Admin.DeniedNumbers, phone) {
+	if IsDenied(cfg, phone) {
 		return Denied
 	}
 	if contains(cfg.Maintainer.Maintainers, phone) {
@@ -44,6 +44,13 @@ func RoleOf(cfg *config.Config, phone string) Role {
 // CheckAccess reports whether phone has at least the needed role.
 func CheckAccess(cfg *config.Config, phone string, needed Role) bool {
 	return RoleOf(cfg, phone) >= needed
+}
+
+// IsDenied reports whether phone is explicitly listed in admin.json's
+// denied_numbers. It lets callers distinguish "denied" from "not approved yet"
+// without duplicating the access-control lists.
+func IsDenied(cfg *config.Config, phone string) bool {
+	return cfg != nil && phone != "" && contains(cfg.Admin.DeniedNumbers, phone)
 }
 
 func contains(list []string, value string) bool {
