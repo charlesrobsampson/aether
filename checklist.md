@@ -453,7 +453,7 @@ go test -v ./internal/model -run '^TestModel$'
 ```
 **Done when:** both PASS; no `yaml` tags anywhere.
 
-### [ ] T04 — Config loader
+### [x] T04 — Config loader
 **Depends on:** T03
 **Branch:** `task/t04-config-loader`
 **Write first:** `internal/config/load_test.go::TestLoadConfig` — table: missing `system.json` errors; valid tree loads; malformed JSON errors; `ResolveRoot` honours `AETHER_CONFIG_DIR`.
@@ -463,8 +463,8 @@ go test -v ./internal/model -run '^TestModel$'
 go test -v ./internal/config -run '^TestLoadConfig$'
 ```
 **Done when:** PASS; every test uses `t.TempDir()`.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6de59891ffeapIAeJAglm48IE`
+**Resume:** `git switch task/t04-config-loader && opencode run -s ses_e6de59891ffeapIAeJAglm48IE "Resume T04 (Config loader). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T05 — Config hot reload
 **Depends on:** T04
