@@ -576,7 +576,7 @@ go test -race ./internal/queue
 **Session:** `opencode:ses_e6d91e262ffeQoOfNXaIp2rjL5` (T12 outbound queue)
 **Resume:** `git switch task/t12-outbound-queue && opencode run -s ses_e6d91e262ffeQoOfNXaIp2rjL5 "Resume T12 (Outbound queue). Read plan.md and checklist.md, then continue."`
 
-### [ ] T13 — Scheduler
+### [x] T13 — Scheduler
 **Depends on:** T02
 **Branch:** `task/t13-scheduler`
 **Write first:** `internal/scheduler/scheduler_test.go::TestScheduler` — `After(30s)` fires exactly once at +30s on `FakeClock`; an absolute instant fires once at that instant; `Cancel` prevents firing; `TestCronNext` — `Next("0 7 * * 1-5", fixedInstant)` returns the expected minute and a 6-field spec is rejected.
@@ -586,8 +586,8 @@ go test -race ./internal/queue
 go test -v ./internal/scheduler -run '^(TestScheduler|TestCronNext)$'
 ```
 **Done when:** both PASS; no `time.Sleep` and no reliance on robfig's internal goroutine.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6d88247effePbLCKo3wFqujNK` (T13 scheduler)
+**Resume:** `git switch task/t13-scheduler && opencode run -s ses_e6d88247effePbLCKo3wFqujNK "Resume T13 (Scheduler). Read plan.md and checklist.md, then continue."`
 
 ---
 
