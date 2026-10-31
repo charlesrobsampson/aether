@@ -532,7 +532,7 @@ go test -race ./internal/session
 **Session:** `opencode:ses_e6dab3dbfffe2qZAZtpwyOeDg7` (T09 session store)
 **Resume:** `git switch task/t09-session-store && opencode run -s ses_e6dab3dbfffe2qZAZtpwyOeDg7 "Resume T09 (Session store). Read plan.md and checklist.md, then continue."`
 
-### [ ] T10 — Metrics registry
+### [x] T10 — Metrics registry
 **Depends on:** T01
 **Branch:** `task/t10-metrics`
 **Write first:** `internal/metrics/metrics_test.go::TestCounters` — increments are visible and named exactly `aether_bulk_message_requests_total`, `aether_outbound_jobs_total`, `aether_inbound_messages_total`, `aether_dropped_total`; `TestMetricsHandler` — `/metrics` text exposition parses and contains `# TYPE`.
@@ -542,8 +542,8 @@ go test -race ./internal/session
 go test -v ./internal/metrics -run '^(TestCounters|TestMetricsHandler)$'
 ```
 **Done when:** both PASS; no `prometheus/client_golang` in `go.mod`.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6da47678ffe2vnf8zshDgUCyL` (T10 metrics registry)
+**Resume:** `git switch task/t10-metrics && opencode run -s ses_e6da47678ffe2vnf8zshDgUCyL "Resume T10 (Metrics registry). Read plan.md and checklist.md, then continue."`
 
 ---
 
