@@ -518,7 +518,7 @@ go test -v ./internal/store -run '^(TestMigrations|TestWAL)$'
 **Session:** `opencode:ses_e6db063d6ffedbQw5QqxVZ7J7w` (T08 SQLite store & migrations)
 **Resume:** `git switch task/t08-sqlite-store && opencode run -s ses_e6db063d6ffedbQw5QqxVZ7J7w "Resume T08 (SQLite store & migrations). Read plan.md and checklist.md, then continue."`
 
-### [ ] T09 — Session store
+### [x] T09 — Session store
 **Depends on:** T02
 **Branch:** `task/t09-session-store`
 **Write first:** `internal/session/session_test.go::TestSessionLifecycle` — start/get/extend/close with `FakeClock`; `TestThreadTargeting` — `#thread-id` selects a thread and default is most recent.
@@ -529,8 +529,8 @@ go test -v ./internal/session -run '^(TestSessionLifecycle|TestThreadTargeting)$
 go test -race ./internal/session
 ```
 **Done when:** both PASS under `-race`; no goroutine leaks.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6dab3dbfffe2qZAZtpwyOeDg7` (T09 session store)
+**Resume:** `git switch task/t09-session-store && opencode run -s ses_e6dab3dbfffe2qZAZtpwyOeDg7 "Resume T09 (Session store). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T10 — Metrics registry
 **Depends on:** T01
