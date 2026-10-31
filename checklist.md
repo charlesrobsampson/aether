@@ -396,9 +396,11 @@ go test -v ./internal/testutil -run '^(TestTempConfig|TestFakeClock)$'
 **Session:** `opencode:ses_e74cdb6d0ffe4oC5vwfKa9Nys8`
 **Resume:** `opencode run -s ses_e74cdb6d0ffe4oC5vwfKa9Nys8 "Resume T02 (Hermetic test harness). Read plan.md and checklist.md, then continue."`
 
-### [ ] T03 — Config & shared model types
+### [x] T03 — Config & shared model types
 **Depends on:** T01
 **Branch:** `task/t03-config-model-types`
+**Session:** `agy:cbb49e56-b9ef-466d-8952-935ce8828e37`
+**Resume:** `git switch task/t03-config-model-types && agy --conversation=cbb49e56-b9ef-466d-8952-935ce8828e37`
 **Write first:** `internal/config/types_test.go::TestStructs` — table of JSON blobs unmarshalling into every type with exact field assertions; `internal/model/model_test.go::TestModel` — `Inbound`/`Outbound` marshal to the §3.2/§3.3 shapes.
 **Implement:** `internal/config/types.go` and `internal/model/model.go` with these exact identifiers. Later tasks must not rename or duplicate them (Rule 9).
 
@@ -450,8 +452,6 @@ go test -v ./internal/config -run '^TestStructs$'
 go test -v ./internal/model -run '^TestModel$'
 ```
 **Done when:** both PASS; no `yaml` tags anywhere.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
 
 ### [ ] T04 — Config loader
 **Depends on:** T03
