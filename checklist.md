@@ -549,7 +549,7 @@ go test -v ./internal/metrics -run '^(TestCounters|TestMetricsHandler)$'
 
 ## Phase 2 — Transport & scheduling
 
-### [ ] T11 — Messenger interface & fake
+### [x] T11 — Messenger interface & fake
 **Depends on:** T01
 **Branch:** `task/t11-messenger`
 **Write first:** `internal/transport/messenger_test.go::TestFakeMessenger` — records calls and returns an injected error.
@@ -559,8 +559,8 @@ go test -v ./internal/metrics -run '^(TestCounters|TestMetricsHandler)$'
 go test -v ./internal/transport -run '^TestFakeMessenger$'
 ```
 **Done when:** PASS.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6d9702a2ffeEXNOK07YyDQEhl` (T11 messenger interface & fake)
+**Resume:** `git switch task/t11-messenger && opencode run -s ses_e6d9702a2ffeEXNOK07YyDQEhl "Resume T11 (Messenger interface & fake). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T12 — Outbound queue
 **Depends on:** T04, T10, T11
