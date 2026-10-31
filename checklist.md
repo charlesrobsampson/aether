@@ -466,7 +466,7 @@ go test -v ./internal/config -run '^TestLoadConfig$'
 **Session:** `opencode:ses_e6de59891ffeapIAeJAglm48IE`
 **Resume:** `git switch task/t04-config-loader && opencode run -s ses_e6de59891ffeapIAeJAglm48IE "Resume T04 (Config loader). Read plan.md and checklist.md, then continue."`
 
-### [ ] T05 — Config hot reload
+### [x] T05 — Config hot reload
 **Depends on:** T04
 **Branch:** `task/t05-config-hot-reload`
 **Write first:** `internal/config/watch_test.go::TestWatchReload` — a fake event source triggers exactly one reload and swaps the config snapshot atomically; a malformed edit keeps the previous snapshot.
@@ -476,8 +476,8 @@ go test -v ./internal/config -run '^TestLoadConfig$'
 go test -v ./internal/config -run '^TestWatchReload$'
 ```
 **Done when:** PASS; the fsnotify implementation is exercised through the interface, not by sleeping.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6dc95334ffeM2eM5I2RH3o3kC` (T05 config hot reload)
+**Resume:** `git switch task/t05-config-hot-reload && opencode run -s ses_e6dc95334ffeM2eM5I2RH3o3kC "Resume T05 (Config hot reload). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T06 — Auth roles
 **Depends on:** T04
