@@ -479,7 +479,7 @@ go test -v ./internal/config -run '^TestWatchReload$'
 **Session:** `opencode:ses_e6dc95334ffeM2eM5I2RH3o3kC` (T05 config hot reload)
 **Resume:** `git switch task/t05-config-hot-reload && opencode run -s ses_e6dc95334ffeM2eM5I2RH3o3kC "Resume T05 (Config hot reload). Read plan.md and checklist.md, then continue."`
 
-### [ ] T06 — Auth roles
+### [x] T06 — Auth roles
 **Depends on:** T04
 **Branch:** `task/t06-auth-roles`
 **Write first:** `internal/auth/role_test.go::TestCheckAccess` — table covering every transition `Denied/User/Admin/Maintainer`, plus "denied wins over approved".
@@ -489,8 +489,8 @@ go test -v ./internal/config -run '^TestWatchReload$'
 go test -v ./internal/auth -run '^TestCheckAccess$'
 ```
 **Done when:** PASS; `admin.json` is the only source of approved/denied numbers.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6dc20db8ffepO3XzsJspeXpaG` (T06 auth roles)
+**Resume:** `git switch task/t06-auth-roles && opencode run -s ses_e6dc20db8ffepO3XzsJspeXpaG "Resume T06 (Auth roles). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T07 — JWT issue/verify
 **Depends on:** T06
