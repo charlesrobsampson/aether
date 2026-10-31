@@ -505,7 +505,7 @@ go test -v ./internal/auth -run '^TestJWT$'
 **Session:** `opencode:ses_e6dba0bf8ffersHt00DErGuXwJ` (T07 JWT issue/verify)
 **Resume:** `git switch task/t07-jwt && opencode run -s ses_e6dba0bf8ffersHt00DErGuXwJ "Resume T07 (JWT issue/verify). Read plan.md and checklist.md, then continue."`
 
-### [ ] T08 — SQLite store & migrations
+### [x] T08 — SQLite store & migrations
 **Depends on:** T01
 **Branch:** `task/t08-sqlite-store`
 **Write first:** `internal/store/store_test.go::TestMigrations` — `:memory:` creates all four tables with expected columns and is idempotent; `TestWAL` — a file DB reports `journal_mode=wal` and `busy_timeout=5000`.
@@ -515,8 +515,8 @@ go test -v ./internal/auth -run '^TestJWT$'
 go test -v ./internal/store -run '^(TestMigrations|TestWAL)$'
 ```
 **Done when:** both PASS; no CGO.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6db063d6ffedbQw5QqxVZ7J7w` (T08 SQLite store & migrations)
+**Resume:** `git switch task/t08-sqlite-store && opencode run -s ses_e6db063d6ffedbQw5QqxVZ7J7w "Resume T08 (SQLite store & migrations). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T09 — Session store
 **Depends on:** T02
