@@ -492,7 +492,7 @@ go test -v ./internal/auth -run '^TestCheckAccess$'
 **Session:** `opencode:ses_e6dc20db8ffepO3XzsJspeXpaG` (T06 auth roles)
 **Resume:** `git switch task/t06-auth-roles && opencode run -s ses_e6dc20db8ffepO3XzsJspeXpaG "Resume T06 (Auth roles). Read plan.md and checklist.md, then continue."`
 
-### [ ] T07 — JWT issue/verify
+### [x] T07 — JWT issue/verify
 **Depends on:** T06
 **Branch:** `task/t07-jwt`
 **Write first:** `internal/auth/jwt_test.go::TestJWT` — valid token, expired, wrong secret, wrong role, missing/malformed `Authorization` header.
@@ -502,8 +502,8 @@ go test -v ./internal/auth -run '^TestCheckAccess$'
 go test -v ./internal/auth -run '^TestJWT$'
 ```
 **Done when:** PASS; no `alg:none` path.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6dba0bf8ffersHt00DErGuXwJ` (T07 JWT issue/verify)
+**Resume:** `git switch task/t07-jwt && opencode run -s ses_e6dba0bf8ffersHt00DErGuXwJ "Resume T07 (JWT issue/verify). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T08 — SQLite store & migrations
 **Depends on:** T01
