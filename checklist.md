@@ -562,7 +562,7 @@ go test -v ./internal/transport -run '^TestFakeMessenger$'
 **Session:** `opencode:ses_e6d9702a2ffeEXNOK07YyDQEhl` (T11 messenger interface & fake)
 **Resume:** `git switch task/t11-messenger && opencode run -s ses_e6d9702a2ffeEXNOK07YyDQEhl "Resume T11 (Messenger interface & fake). Read plan.md and checklist.md, then continue."`
 
-### [ ] T12 — Outbound queue
+### [x] T12 — Outbound queue
 **Depends on:** T04, T10, T11
 **Branch:** `task/t12-outbound-queue`
 **Write first:** `internal/queue/queue_test.go::TestQueueDrain` — N jobs reach the fake messenger; `TestRateLimit` — a fake clock enforces the token bucket without sleeping; `TestMutedDropped` — muted recipients increment `aether_dropped_total` and are never sent; `TestShutdown` — `Shutdown(ctx)` drains then rejects new jobs.
@@ -573,8 +573,8 @@ go test -v ./internal/queue -run '^Test(QueueDrain|RateLimit|MutedDropped|Shutdo
 go test -race ./internal/queue
 ```
 **Done when:** all PASS under `-race`.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6d91e262ffeQoOfNXaIp2rjL5` (T12 outbound queue)
+**Resume:** `git switch task/t12-outbound-queue && opencode run -s ses_e6d91e262ffeQoOfNXaIp2rjL5 "Resume T12 (Outbound queue). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T13 — Scheduler
 **Depends on:** T02
