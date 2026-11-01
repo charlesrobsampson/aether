@@ -632,7 +632,7 @@ go test -v ./internal/api -run '^TestMessage(Bulk|Group)$'
 **Session:** `opencode:ses_e6ad11aefffe0zMXXgmY8s2bxZ` (T16 bulk & group sends)
 **Resume:** `git switch task/t16-message-bulk-group && opencode run -s ses_e6ad11aefffe0zMXXgmY8s2bxZ "Resume T16 (Bulk & group sends). Read plan.md and checklist.md, then continue."`
 
-### [ ] T17 — Mux, `/healthz`, `/metrics`
+### [x] T17 — Mux, `/healthz`, `/metrics`
 **Depends on:** T04, T08, T10, T14
 **Branch:** `task/t17-server-health-metrics`
 **Write first:** `internal/api/server_test.go::TestHealthMetrics` — `/healthz` is `200` when config is loaded and the store pings, `503` otherwise; `/metrics` serves the registry; no duplicate route registration.
@@ -642,8 +642,8 @@ go test -v ./internal/api -run '^TestMessage(Bulk|Group)$'
 go test -v ./internal/api -run '^TestHealthMetrics$'
 ```
 **Done when:** PASS; no second `http.ServeMux` anywhere.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6ac686d5ffe5RSXzk2cay4XfM` (T17 server health & metrics)
+**Resume:** `git switch task/t17-server-health-metrics && opencode run -s ses_e6ac686d5ffe5RSXzk2cay4XfM "Resume T17 (Mux, /healthz, /metrics). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T18 — `/register-satellite`
 **Depends on:** T04, T07, T08
