@@ -9,6 +9,7 @@ import (
 
 	"github.com/charlesrobsampson/aether/internal/auth"
 	"github.com/charlesrobsampson/aether/internal/config"
+	"github.com/charlesrobsampson/aether/internal/metrics"
 	"github.com/charlesrobsampson/aether/internal/model"
 	"github.com/charlesrobsampson/aether/internal/queue"
 )
@@ -39,8 +40,10 @@ type messageHandler struct {
 // NewMessageHandler returns the satellite-facing POST /message handler.
 //
 // Requests are authenticated as admin (or maintainer) before the envelope is
-// read. Denied recipients are dropped silently: the request still succeeds but
-// no job is enqueued for them.
+// read. A multi-recipient request fans out to one job per accepted recipient
+// and increments aether_bulk_message_requests_total once. Denied recipients and
+// unapproved groups are dropped silently: the request still succeeds but no job
+// is enqueued for them.
 func NewMessageHandler(options MessageOptions) http.Handler {
 	return &messageHandler{options: options}
 }
@@ -83,6 +86,28 @@ func (h *messageHandler) handle(w http.ResponseWriter, r *http.Request, cfg *con
 	}
 
 	provider := cfg.System.DefaultProvider
+
+	// A group send is one job addressed to the group conversation. The group
+	// must be approved; otherwise it is dropped silently like a denied
+	// recipient.
+	if strings.TrimSpace(outbound.GroupChatID) != "" {
+		if !groupApproved(cfg, outbound.GroupChatID) {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		job := queue.Job{
+			Recipient: outbound.GroupChatID,
+			Text:      outbound.Text,
+			Provider:  provider,
+		}
+		if err := h.options.Queue.Enqueue(job); err != nil {
+			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
 	for _, recipient := range outbound.Recipients {
 		if auth.IsDenied(cfg, recipient) {
 			continue
@@ -98,7 +123,24 @@ func (h *messageHandler) handle(w http.ResponseWriter, r *http.Request, cfg *con
 		}
 	}
 
+	// One increment per request, regardless of how many recipients survived
+	// the denied filter. Single-recipient sends are not bulk.
+	if len(outbound.Recipients) > 1 {
+		metrics.IncBulkMessageRequests()
+	}
+
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// groupApproved reports whether groupID appears verbatim in admin.json's
+// approved_groups. Group identifiers are opaque and matched literally.
+func groupApproved(cfg *config.Config, groupID string) bool {
+	for _, approved := range cfg.Admin.ApprovedGroups {
+		if approved == groupID {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *messageHandler) config() *config.Config {
@@ -123,14 +165,15 @@ func decodeOutbound(w http.ResponseWriter, r *http.Request) (model.Outbound, err
 }
 
 // validateOutbound enforces plan §3.3: recipients and group_chat_id are
-// mutually exclusive, at least one recipient is present, every recipient is
+// mutually exclusive, exactly one of them is present, every recipient is
 // non-blank, and text is required unless a session action is present.
 func validateOutbound(outbound model.Outbound) error {
-	if outbound.GroupChatID != "" && len(outbound.Recipients) > 0 {
+	hasGroup := strings.TrimSpace(outbound.GroupChatID) != ""
+	if hasGroup && len(outbound.Recipients) > 0 {
 		return errors.New("message: recipients and group_chat_id are mutually exclusive")
 	}
-	if len(outbound.Recipients) == 0 {
-		return errors.New("message: recipients are required")
+	if !hasGroup && len(outbound.Recipients) == 0 {
+		return errors.New("message: recipients or group_chat_id are required")
 	}
 	for _, recipient := range outbound.Recipients {
 		if strings.TrimSpace(recipient) == "" {

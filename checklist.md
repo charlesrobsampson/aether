@@ -619,7 +619,7 @@ go test -v ./internal/api -run '^TestMessageSingle$'
 **Session:** `opencode:ses_e6d6e0593ffejd1Q928KTKnCYC` (T15 /message single recipient)
 **Resume:** `git switch task/t15-message-single && opencode run -s ses_e6d6e0593ffejd1Q928KTKnCYC "Resume T15 (/message single recipient). Read plan.md and checklist.md, then continue."`
 
-### [ ] T16 — Bulk & group sends
+### [x] T16 — Bulk & group sends
 **Depends on:** T15
 **Branch:** `task/t16-message-bulk-group`
 **Write first:** `internal/api/message_test.go::TestMessageBulk` — three recipients create three jobs and increment the bulk counter exactly once; `TestMessageGroup` — approved group creates one job, unapproved group creates none, `recipients` + `group_chat_id` returns `400`.
@@ -629,8 +629,8 @@ go test -v ./internal/api -run '^TestMessageSingle$'
 go test -v ./internal/api -run '^TestMessage(Bulk|Group)$'
 ```
 **Done when:** both PASS.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6ad11aefffe0zMXXgmY8s2bxZ` (T16 bulk & group sends)
+**Resume:** `git switch task/t16-message-bulk-group && opencode run -s ses_e6ad11aefffe0zMXXgmY8s2bxZ "Resume T16 (Bulk & group sends). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T17 — Mux, `/healthz`, `/metrics`
 **Depends on:** T04, T08, T10, T14
