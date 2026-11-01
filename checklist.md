@@ -645,7 +645,7 @@ go test -v ./internal/api -run '^TestHealthMetrics$'
 **Session:** `opencode:ses_e6ac686d5ffe5RSXzk2cay4XfM` (T17 server health & metrics)
 **Resume:** `git switch task/t17-server-health-metrics && opencode run -s ses_e6ac686d5ffe5RSXzk2cay4XfM "Resume T17 (Mux, /healthz, /metrics). Read plan.md and checklist.md, then continue."`
 
-### [ ] T18 — `/register-satellite`
+### [x] T18 — `/register-satellite`
 **Depends on:** T04, T07, T08
 **Branch:** `task/t18-register-satellite`
 **Write first:** `internal/api/register_test.go::TestRegisterSatellite` — table: success writes `satellites/<name>.json` atomically, mirrors to SQLite, regenerates `routes.json`, returns `201`; duplicate trigger `409`; built-in name/trigger (`config`, `admin`, `remind`, `test`) `409`; `name: "../evil"` `400`; non-absolute endpoint `400`; missing JWT `401`; role `user` `403`.
@@ -655,8 +655,8 @@ go test -v ./internal/api -run '^TestHealthMetrics$'
 go test -v ./internal/api -run '^TestRegisterSatellite$'
 ```
 **Done when:** PASS; `routes.json` is rebuilt, never appended.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6abe88baffeXB4793Ji1b8xsM` (T18 register-satellite)
+**Resume:** `git switch task/t18-register-satellite && opencode run -s ses_e6abe88baffeXB4793Ji1b8xsM "Resume T18 (/register-satellite). Read plan.md and checklist.md, then continue."`
 
 ---
 

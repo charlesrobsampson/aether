@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver
 )
@@ -69,6 +70,47 @@ func (s *Store) Close() error {
 // Ping reports whether the database is reachable.
 func (s *Store) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
+}
+
+// SatelliteRecord is the durable mirror of one satellites/<name>.json document
+// in the SQLite registry (plan §3.8).
+type SatelliteRecord struct {
+	Name         string
+	Trigger      string
+	Endpoint     string
+	Config       []byte
+	RegisteredBy string
+}
+
+// UpsertSatellite inserts or updates the registry row for rec. The file on disk
+// remains the source of truth; this mirror exists for queries and audit.
+func (s *Store) UpsertSatellite(ctx context.Context, rec SatelliteRecord) error {
+	if s == nil || s.db == nil {
+		return errors.New("store: closed")
+	}
+	if rec.Name == "" {
+		return errors.New("store: satellite name is empty")
+	}
+	if rec.Trigger == "" {
+		return errors.New("store: satellite trigger is empty")
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO satellites (name, "trigger", endpoint, config, registered_by, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET
+			"trigger"     = excluded."trigger",
+			endpoint      = excluded.endpoint,
+			config        = excluded.config,
+			registered_by = excluded.registered_by,
+			updated_at    = excluded.updated_at`,
+		rec.Name, rec.Trigger, rec.Endpoint, string(rec.Config), rec.RegisteredBy, now, now,
+	)
+	if err != nil {
+		return fmt.Errorf("store: upsert satellite %q: %w", rec.Name, err)
+	}
+	return nil
 }
 
 func (s *Store) configure() error {

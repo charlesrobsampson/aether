@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -143,6 +144,17 @@ type Authenticator struct {
 	Secret string
 }
 
+// claimsKey is the unexported context key for verified claims. A private type
+// keeps other packages from forging claims through context.WithValue.
+type claimsKey struct{}
+
+// ClaimsFromContext returns the verified claims that Middleware attached to the
+// request context. Handlers use it to attribute an action to the token subject.
+func ClaimsFromContext(ctx context.Context) (*Claims, bool) {
+	claims, ok := ctx.Value(claimsKey{}).(*Claims)
+	return claims, ok
+}
+
 // Middleware guards next with a Bearer token. A missing, malformed, expired, or
 // wrongly signed token is 401; a valid token with a role below needed is 403.
 func (a Authenticator) Middleware(next http.Handler, needed Role) http.Handler {
@@ -161,7 +173,8 @@ func (a Authenticator) Middleware(next http.Handler, needed Role) http.Handler {
 			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 			return
 		}
-		next.ServeHTTP(w, r)
+		ctx := context.WithValue(r.Context(), claimsKey{}, claims)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

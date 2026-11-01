@@ -40,6 +40,9 @@ type ServerOptions struct {
 	OnUnknown func(phone string)
 	// Queue receives outbound jobs from /message.
 	Queue Enqueuer
+	// Registry mirrors a registered satellite into SQLite. A nil registry
+	// leaves /register-satellite unavailable (503).
+	Registry SatelliteStore
 }
 
 // NewServer builds the HTTP handler for every Aether endpoint.
@@ -63,6 +66,10 @@ func NewServer(options ServerOptions) http.Handler {
 	mux.Handle("POST /message", NewMessageHandler(MessageOptions{
 		Config: options.Config,
 		Queue:  options.Queue,
+	}))
+	mux.Handle("POST /register-satellite", NewRegisterHandler(RegisterOptions{
+		Config: options.Config,
+		Store:  options.Registry,
 	}))
 	mux.Handle("GET /healthz", healthzHandler(options))
 	mux.Handle("GET /metrics", registry.Handler())
