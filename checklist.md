@@ -606,7 +606,7 @@ go test -v ./internal/api -run '^TestReceiveHandler$'
 **Session:** `opencode:ses_e6d77d4d5ffeiIifLPTz4ZHVow` (T14 /receive handler)
 **Resume:** `git switch task/t14-receive-handler && opencode run -s ses_e6d77d4d5ffeiIifLPTz4ZHVow "Resume T14 (/receive handler). Read plan.md and checklist.md, then continue."`
 
-### [ ] T15 — `/message` single recipient
+### [x] T15 — `/message` single recipient
 **Depends on:** T04, T07, T12, T14
 **Branch:** `task/t15-message-single`
 **Write first:** `internal/api/message_test.go::TestMessageSingle` — table: valid one-recipient payload enqueues one job and returns `202`; malformed `400`; missing/invalid JWT `401`; insufficient role `403`; denied recipient `202` with zero jobs.
@@ -616,8 +616,8 @@ go test -v ./internal/api -run '^TestReceiveHandler$'
 go test -v ./internal/api -run '^TestMessageSingle$'
 ```
 **Done when:** PASS; a JWT is minted in the test via `auth.Issue`.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6d6e0593ffejd1Q928KTKnCYC` (T15 /message single recipient)
+**Resume:** `git switch task/t15-message-single && opencode run -s ses_e6d6e0593ffejd1Q928KTKnCYC "Resume T15 (/message single recipient). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T16 — Bulk & group sends
 **Depends on:** T15
