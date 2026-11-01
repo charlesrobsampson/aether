@@ -662,7 +662,7 @@ go test -v ./internal/api -run '^TestRegisterSatellite$'
 
 ## Phase 4 — Parsing & routing
 
-### [ ] T19 — SDK `MatchCommand`
+### [x] T19 — SDK `MatchCommand`
 **Depends on:** T01
 **Branch:** `task/t19-sdk-command`
 **Write first:** `pkg/sdk/command_test.go::TestMatchCommand` — table: relative reminder, absolute reminder, multi-word `<msg>`, overlapping patterns (declaration order wins), no match, trigger included in pattern.
@@ -672,8 +672,8 @@ go test -v ./internal/api -run '^TestRegisterSatellite$'
 go test -v ./pkg/sdk -run '^TestMatchCommand$'
 ```
 **Done when:** PASS; regexes are compiled once per spec, not per message.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6a796e7dffe1VqdLbhCOJFfNM` (T19 SDK MatchCommand)
+**Resume:** `git switch task/t19-sdk-command && opencode run -s ses_e6a796e7dffe1VqdLbhCOJFfNM "Resume T19 (SDK MatchCommand). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T20 — SDK `ConvertArgs` + `ToUTC`
 **Depends on:** T02, T19
