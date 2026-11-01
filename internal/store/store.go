@@ -113,6 +113,51 @@ func (s *Store) UpsertSatellite(ctx context.Context, rec SatelliteRecord) error 
 	return nil
 }
 
+// RouteLog is one inbound or outbound audit event (plan §3.8). Times are stored
+// as UTC RFC3339; a zero CreatedAt means "now".
+type RouteLog struct {
+	Direction string
+	Sender    string
+	Recipient string
+	Satellite string
+	Thread    string
+	Text      string
+	Status    string
+	Error     string
+	CreatedAt time.Time
+}
+
+// LogRoute appends one audit row to route_log. Direction and Status are
+// required; the remaining fields may be empty.
+func (s *Store) LogRoute(ctx context.Context, rec RouteLog) error {
+	if s == nil || s.db == nil {
+		return errors.New("store: closed")
+	}
+	if rec.Direction == "" {
+		return errors.New("store: route log direction is empty")
+	}
+	if rec.Status == "" {
+		return errors.New("store: route log status is empty")
+	}
+
+	createdAt := rec.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO route_log
+			(direction, sender, recipient, satellite, thread, text, status, error, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rec.Direction, rec.Sender, rec.Recipient, rec.Satellite, rec.Thread,
+		rec.Text, rec.Status, rec.Error, createdAt.UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("store: log route: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) configure() error {
 	// busy_timeout must be set before any statement that can wait on a lock.
 	for _, stmt := range []string{

@@ -688,9 +688,11 @@ go test -v ./pkg/sdk -run '^(TestConvertArgs|TestToUTC)$'
 **Session:** `opencode:ses_e6a6eaf7dffeOLyNkHX7UCkqpK` (T20 SDK ConvertArgs + ToUTC)
 **Resume:** `git switch task/t20-sdk-convert-tz && opencode run -s ses_e6a6eaf7dffeOLyNkHX7UCkqpK "Resume T20 (SDK ConvertArgs + ToUTC). Read plan.md and checklist.md, then continue."`
 
-### [ ] T21 — Router dispatch
+### [x] T21 — Router dispatch
 **Depends on:** T04, T08, T09, T10, T19, T20
 **Branch:** `task/t21-router-dispatch`
+**Session:** `opencode:ses_e6a67fdc2ffeuPPp3F1YaRdFG2` (T21 router dispatch)
+**Resume:** `git switch task/t21-router-dispatch && opencode run -s ses_e6a67fdc2ffeuPPp3F1YaRdFG2 "Resume T21 (Router dispatch). Read plan.md and checklist.md, then continue."`
 **Write first:** `internal/router/dispatch_test.go::TestDispatch` — table: prefix stripping, satellite alias, command alias, unknown trigger dropped, typed payload posted to `endpoint+path`, route logged.
 **Implement:** `internal/router/dispatch.go`: accept `model.Inbound`, resolve user config, strip prefixes, resolve aliases, look up trigger in `routes.json`, `MatchCommand`, `ConvertArgs`, POST JSON, write `route_log`. The outbound POST uses an injectable `*http.Client` with a 5 s timeout; a non-2xx response or transport error is logged and recorded as `status=failed` with the error text — it is never returned to the sender, and no reply is generated.
 **Verify:**
