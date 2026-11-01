@@ -675,7 +675,7 @@ go test -v ./pkg/sdk -run '^TestMatchCommand$'
 **Session:** `opencode:ses_e6a796e7dffe1VqdLbhCOJFfNM` (T19 SDK MatchCommand)
 **Resume:** `git switch task/t19-sdk-command && opencode run -s ses_e6a796e7dffe1VqdLbhCOJFfNM "Resume T19 (SDK MatchCommand). Read plan.md and checklist.md, then continue."`
 
-### [ ] T20 — SDK `ConvertArgs` + `ToUTC`
+### [x] T20 — SDK `ConvertArgs` + `ToUTC`
 **Depends on:** T02, T19
 **Branch:** `task/t20-sdk-convert-tz`
 **Write first:** `pkg/sdk/convert_test.go::TestConvertArgs` — int, enum rejection, datetime conversion, missing arg; `tz_test.go::TestToUTC` — `America/Chicago` and `Europe/London`, DST boundaries, all five accepted layouts, unknown zone.
@@ -685,8 +685,8 @@ go test -v ./pkg/sdk -run '^TestMatchCommand$'
 go test -v ./pkg/sdk -run '^(TestConvertArgs|TestToUTC)$'
 ```
 **Done when:** both PASS; a container without zoneinfo still resolves zones (tzdata import present).
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6a6eaf7dffeOLyNkHX7UCkqpK` (T20 SDK ConvertArgs + ToUTC)
+**Resume:** `git switch task/t20-sdk-convert-tz && opencode run -s ses_e6a6eaf7dffeOLyNkHX7UCkqpK "Resume T20 (SDK ConvertArgs + ToUTC). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T21 — Router dispatch
 **Depends on:** T04, T08, T09, T10, T19, T20
