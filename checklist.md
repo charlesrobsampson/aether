@@ -785,7 +785,7 @@ go test -v ./internal/satellite/adminmgr -run '^Test(ApprovalFlow|ApprovalRotati
 **Session:** `opencode:ses_e65469a87ffe9b7NdTMQw96taO` (T27 admin-manager approvals)
 **Resume:** `git switch task/t27-adminmgr && opencode run -s ses_e65469a87ffe9b7NdTMQw96taO "Resume T27 (Admin-manager approvals). Read plan.md and checklist.md, then continue."`
 
-### [ ] T28 — Test/reminder satellite
+### [x] T28 — Test/reminder satellite
 **Depends on:** T12, T13, T20, T23, T24
 **Branch:** `task/t28-testsat`
 **Write first:** `internal/satellite/testsat/testsat_test.go::TestReminderFlow` — `in 30 seconds` fires exactly one `/message` after `FakeClock.Advance(30s)`; absolute reminder fires once; `/test` echoes `test received`.
@@ -795,8 +795,8 @@ go test -v ./internal/satellite/adminmgr -run '^Test(ApprovalFlow|ApprovalRotati
 go test -v ./internal/satellite/testsat -run '^TestReminderFlow$'
 ```
 **Done when:** PASS; no `time.Sleep`.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e65383d7affeWCzrQ2WyfnPlns` (T28 test/reminder satellite)
+**Resume:** `git switch task/t28-testsat && opencode run -s ses_e65383d7affeWCzrQ2WyfnPlns "Resume T28 (Test/reminder satellite). Read plan.md and checklist.md, then continue."`
 
 ---
 
