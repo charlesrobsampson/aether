@@ -837,7 +837,7 @@ go test -v ./internal/satellite/testsat -run '^TestReminderFlow$'
 **Session:** `opencode:ses_e6389eb9affeChuFzGMN8c0trj` (T30 msg inbound forward)
 **Resume:** `git switch task/t30-msg-forward && git -C ../msg switch task/t30-msg-forward && opencode run -s ses_e6389eb9affeChuFzGMN8c0trj "Resume T30 (msg inbound forward). Read plan.md and checklist.md, then continue."`
 
-### [ ] T31 — Aether `msg` adapter
+### [x] T31 — Aether `msg` adapter
 **Depends on:** T11, T29
 **Branch:** `task/t31-msg-adapter`
 **Write first:** `internal/transport/msg_test.go::TestMsgAdapter` — a fake `msg` sender receives `Send(ctx, recipient, text)` unchanged and errors propagate.
@@ -847,8 +847,8 @@ go test -v ./internal/satellite/testsat -run '^TestReminderFlow$'
 go test -v ./internal/transport -run '^TestMsgAdapter$'
 ```
 **Done when:** PASS; no network in the test.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e635097b7ffeiMo9JlecZSA7i6` (T31 Aether msg adapter)
+**Resume:** `git switch task/t31-msg-adapter && opencode run -s ses_e635097b7ffeiMo9JlecZSA7i6 "Resume T31 (Aether msg adapter). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T32 — wind-predictor notifier
 **Depends on:** T23

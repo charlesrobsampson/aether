@@ -3,6 +3,7 @@ module github.com/charlesrobsampson/aether
 go 1.27.3
 
 require (
+	github.com/charlesrobsampson/msg v0.0.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/robfig/cron/v3 v3.0.1
 	modernc.org/sqlite v1.61.1
@@ -19,3 +20,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
+
+replace github.com/charlesrobsampson/msg => ../msg
