@@ -733,7 +733,7 @@ go test -v ./pkg/sdk -run '^(TestSDKWebhook|TestSDKClient)$'
 **Session:** `opencode:ses_e65882a32ffe2xsFEog6zG0OyK` (T23 SDK webhook & response)
 **Resume:** `git switch task/t23-sdk-webhook && opencode run -s ses_e65882a32ffe2xsFEog6zG0OyK "Resume T23 (SDK webhook & response). Read plan.md and checklist.md, then continue."`
 
-### [ ] T24 — SDK `SessionManager`
+### [x] T24 — SDK `SessionManager`
 **Depends on:** T23
 **Branch:** `task/t24-sdk-sessionmanager`
 **Write first:** `pkg/sdk/session_test.go::TestSDKSessionManager` — `Lock`, `Extend`, `Close` emit the correct `session.action` and `thread_id` envelope.
@@ -743,8 +743,8 @@ go test -v ./pkg/sdk -run '^(TestSDKWebhook|TestSDKClient)$'
 go test -v ./pkg/sdk -run '^TestSDKSessionManager$'
 ```
 **Done when:** PASS.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e657914c0ffejWmU4DYJ35MXla` (T24 SDK SessionManager)
+**Resume:** `git switch task/t24-sdk-sessionmanager && opencode run -s ses_e657914c0ffejWmU4DYJ35MXla "Resume T24 (SDK SessionManager). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T25 — SDK RFC6902 patch
 **Depends on:** T01
