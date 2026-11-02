@@ -158,6 +158,46 @@ func (s *Store) LogRoute(ctx context.Context, rec RouteLog) error {
 	return nil
 }
 
+// PatchRecord is one applied user-configuration patch (plan §3.8). Patch holds
+// the RFC6902 operations that changed the file, as JSON.
+type PatchRecord struct {
+	Phone     string
+	Patch     []byte
+	AppliedBy string
+	AppliedAt time.Time
+}
+
+// LogPatch appends one audit row to patches. Phone and a non-empty Patch are
+// required; a zero AppliedAt means now. The row records who applied the patch,
+// not who it was applied to, which is why AppliedBy is separate from Phone.
+func (s *Store) LogPatch(ctx context.Context, rec PatchRecord) error {
+	if s == nil || s.db == nil {
+		return errors.New("store: closed")
+	}
+	if rec.Phone == "" {
+		return errors.New("store: patch phone is empty")
+	}
+	if len(rec.Patch) == 0 {
+		return errors.New("store: patch is empty")
+	}
+
+	appliedAt := rec.AppliedAt
+	if appliedAt.IsZero() {
+		appliedAt = time.Now()
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO patches (phone, patch, applied_by, applied_at)
+		VALUES (?, ?, ?, ?)`,
+		rec.Phone, string(rec.Patch), rec.AppliedBy,
+		appliedAt.UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("store: log patch: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) configure() error {
 	// busy_timeout must be set before any statement that can wait on a lock.
 	for _, stmt := range []string{

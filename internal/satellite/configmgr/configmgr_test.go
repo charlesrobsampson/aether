@@ -1,0 +1,588 @@
+package configmgr
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"github.com/charlesrobsampson/aether/internal/auth"
+	"github.com/charlesrobsampson/aether/internal/config"
+	"github.com/charlesrobsampson/aether/internal/store"
+	"github.com/charlesrobsampson/aether/internal/testutil"
+	"github.com/charlesrobsampson/aether/pkg/sdk"
+)
+
+const (
+	testSecret  = "configmgr-test-secret"
+	adminPhone  = "+15555550101"
+	userPhone   = "+15555550102"
+	deniedPhone = "+15555550999"
+)
+
+// newTestConfig builds a hermetic config tree in t.TempDir() with one admin,
+// one approved user, and a wind-predictor satellite. The returned Config is a
+// snapshot; callers that change files reload it when they need the new values.
+func newTestConfig(t *testing.T) (root string, cfg *config.Config, st *store.Store) {
+	t.Helper()
+
+	root = t.TempDir()
+
+	testutil.WriteJSON(t, filepath.Join(root, "system.json"), config.SystemConfig{
+		Server: config.ServerConfig{Port: 8080},
+		Auth:   config.AuthConfig{JWTSecret: testSecret},
+	})
+	testutil.WriteJSON(t, filepath.Join(root, "admin.json"), config.AdminConfig{
+		Admins:          []string{adminPhone},
+		ApprovedNumbers: []string{adminPhone, userPhone},
+		DeniedNumbers:   []string{deniedPhone},
+		ApprovedGroups:  []string{"group.example"},
+	})
+	testutil.WriteJSON(t, filepath.Join(root, "maintainer.json"), config.MaintainerConfig{})
+	testutil.WriteJSON(t, filepath.Join(root, "users", userPhone+".json"), config.UserConfig{
+		Prefixes:     []string{"!"},
+		Timezone:     "America/Chicago",
+		SatelliteIDs: map[string]string{"wind-predictor": "alice"},
+		Aliases: config.Aliases{
+			Satellites: map[string]string{"wind": "wind-predictor"},
+			Commands:   map[string]string{"w": "fly"},
+		},
+	})
+	testutil.WriteJSON(t, filepath.Join(root, "satellites", "wind-predictor.json"), config.SatelliteConfig{
+		Name:     "wind-predictor",
+		Trigger:  "fly",
+		Endpoint: "http://127.0.0.1:1",
+	})
+
+	cfg = reloadConfig(t, root)
+
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open(:memory:): %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("store.Close: %v", err)
+		}
+	})
+
+	return root, cfg, st
+}
+
+func reloadConfig(t *testing.T, root string) *config.Config {
+	t.Helper()
+
+	cfg, err := config.LoadConfig(root)
+	if err != nil {
+		t.Fatalf("config.LoadConfig(%s): %v", root, err)
+	}
+	return cfg
+}
+
+func readUserFile(t *testing.T, root, phone string) []byte {
+	t.Helper()
+
+	raw, err := os.ReadFile(filepath.Join(root, "users", phone+".json"))
+	if err != nil {
+		t.Fatalf("read user file for %s: %v", phone, err)
+	}
+	return raw
+}
+
+func readFileMaybe(t *testing.T, path string) ([]byte, bool) {
+	t.Helper()
+
+	raw, err := os.ReadFile(path)
+	if err == nil {
+		return raw, true
+	}
+	if os.IsNotExist(err) {
+		return nil, false
+	}
+	t.Fatalf("read %s: %v", path, err)
+	return nil, false
+}
+
+func requireStatus(t *testing.T, err error, want int) {
+	t.Helper()
+
+	if want == 0 {
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return
+	}
+
+	var configErr *Error
+	if !errors.As(err, &configErr) {
+		t.Fatalf("error %v is not *configmgr.Error", err)
+	}
+	if configErr.Status != want {
+		t.Fatalf("error status = %d, want %d (error: %v)", configErr.Status, want, err)
+	}
+}
+
+// TestApplyPatch covers the on-disk atomic patch and the SQLite audit row
+// required by plan §3.14 and §3.8.
+func TestApplyPatch(t *testing.T) {
+	t.Run("timezone and audit", func(t *testing.T) {
+		root, cfg, st := newTestConfig(t)
+		manager := New(Options{
+			Config: func() *config.Config { return cfg },
+			Store:  st,
+		})
+
+		err := manager.HandlePatch(sdk.Transmission{
+			Command: "set",
+			Trigger: "config",
+			Text:    "config set timezone Europe/London",
+			Sender:  userPhone,
+		})
+		requireStatus(t, err, 0)
+
+		var user config.UserConfig
+		raw := readUserFile(t, root, userPhone)
+		if err := json.Unmarshal(raw, &user); err != nil {
+			t.Fatalf("decode patched user: %v", err)
+		}
+		if user.Timezone != "Europe/London" {
+			t.Fatalf("timezone = %q, want Europe/London", user.Timezone)
+		}
+		if !reflect.DeepEqual(user.Prefixes, []string{"!"}) {
+			t.Fatalf("unrelated prefixes changed: %v", user.Prefixes)
+		}
+		if got := user.SatelliteIDs["wind-predictor"]; got != "alice" {
+			t.Fatalf("satellite_ids changed: %q", got)
+		}
+
+		rows := queryPatches(t, st)
+		if len(rows) != 1 {
+			t.Fatalf("patches rows = %d, want 1", len(rows))
+		}
+		if rows[0].phone != userPhone {
+			t.Fatalf("patches.phone = %q, want %q", rows[0].phone, userPhone)
+		}
+		if rows[0].appliedBy != userPhone {
+			t.Fatalf("patches.applied_by = %q, want %q", rows[0].appliedBy, userPhone)
+		}
+
+		var ops []sdk.Operation
+		if err := json.Unmarshal([]byte(rows[0].patch), &ops); err != nil {
+			t.Fatalf("decode audit patch: %v", err)
+		}
+		if len(ops) != 1 || ops[0].Path != "/timezone" {
+			t.Fatalf("audit patch = %+v, want one /timezone op", ops)
+		}
+		if ops[0].Value != "Europe/London" {
+			t.Fatalf("audit patch value = %v, want Europe/London", ops[0].Value)
+		}
+
+		// The atomic write must not leave a temp file behind.
+		entries, err := os.ReadDir(filepath.Join(root, "users"))
+		if err != nil {
+			t.Fatalf("read users dir: %v", err)
+		}
+		for _, entry := range entries {
+			if strings.Contains(entry.Name(), ".tmp") {
+				t.Fatalf("temporary file left behind: %s", entry.Name())
+			}
+		}
+	})
+
+	t.Run("nested alias creates missing parents", func(t *testing.T) {
+		root, cfg, st := newTestConfig(t)
+
+		// Replace the user file with a document that has no aliases object at
+		// all, so the patch has to create the intermediate containers.
+		testutil.WriteJSON(t, filepath.Join(root, "users", userPhone+".json"), map[string]any{
+			"timezone": "America/Chicago",
+		})
+		cfg = reloadConfig(t, root)
+
+		manager := New(Options{
+			Config: func() *config.Config { return cfg },
+			Store:  st,
+		})
+		for _, text := range []string{
+			"config set aliases.satellites.home wind-predictor",
+			"config set aliases.commands.h fly",
+		} {
+			if err := manager.HandlePatch(sdk.Transmission{
+				Command: "set",
+				Trigger: "config",
+				Text:    text,
+				Sender:  userPhone,
+			}); err != nil {
+				t.Fatalf("HandlePatch(%q): %v", text, err)
+			}
+		}
+
+		var user config.UserConfig
+		if err := json.Unmarshal(readUserFile(t, root, userPhone), &user); err != nil {
+			t.Fatalf("decode patched user: %v", err)
+		}
+		if got := user.Aliases.Satellites["home"]; got != "wind-predictor" {
+			t.Fatalf("aliases.satellites.home = %q, want wind-predictor", got)
+		}
+		if got := user.Aliases.Commands["h"]; got != "fly" {
+			t.Fatalf("aliases.commands.h = %q, want fly", got)
+		}
+		if user.Timezone != "America/Chicago" {
+			t.Fatalf("timezone changed: %q", user.Timezone)
+		}
+
+		if rows := queryPatches(t, st); len(rows) != 2 {
+			t.Fatalf("patches rows = %d, want 2", len(rows))
+		}
+	})
+}
+
+// TestConfigSetCommand covers the role checks and key whitelist from plan §3.5,
+// §3.6, and docs/open-questions.md #3.
+func TestConfigSetCommand(t *testing.T) {
+	tests := []struct {
+		name string
+
+		sender string
+		text   string
+
+		wantStatus int
+		// unchangedPhone, when set, must have identical bytes (or remain
+		// absent) before and after the call.
+		unchangedPhone string
+		check          func(t *testing.T, root string)
+	}{
+		{
+			name:   "self edit allowed",
+			sender: userPhone,
+			text:   "config set timezone Europe/Paris",
+			check: func(t *testing.T, root string) {
+				var user config.UserConfig
+				if err := json.Unmarshal(readUserFile(t, root, userPhone), &user); err != nil {
+					t.Fatalf("decode user: %v", err)
+				}
+				if user.Timezone != "Europe/Paris" {
+					t.Fatalf("timezone = %q, want Europe/Paris", user.Timezone)
+				}
+			},
+		},
+		{
+			name:           "other user denied for user",
+			sender:         userPhone,
+			text:           "config set @+15555550101 timezone Europe/Paris",
+			wantStatus:     http.StatusForbidden,
+			unchangedPhone: adminPhone,
+		},
+		{
+			name:   "other user allowed for admin",
+			sender: adminPhone,
+			text:   "config set @+15555550102 timezone Europe/Paris",
+			check: func(t *testing.T, root string) {
+				var user config.UserConfig
+				if err := json.Unmarshal(readUserFile(t, root, userPhone), &user); err != nil {
+					t.Fatalf("decode user: %v", err)
+				}
+				if user.Timezone != "Europe/Paris" {
+					t.Fatalf("timezone = %q, want Europe/Paris", user.Timezone)
+				}
+			},
+		},
+		{
+			name:           "disallowed key rejected",
+			sender:         userPhone,
+			text:           "config set default_provider openmessage",
+			wantStatus:     http.StatusBadRequest,
+			unchangedPhone: userPhone,
+		},
+		{
+			name:           "satellite_ids not user editable",
+			sender:         userPhone,
+			text:           "config set satellite_ids.wind-predictor mallory",
+			wantStatus:     http.StatusBadRequest,
+			unchangedPhone: userPhone,
+		},
+		{
+			name:           "satellite_ids not admin editable via set",
+			sender:         adminPhone,
+			text:           "config set @+15555550102 satellite_ids.wind-predictor mallory",
+			wantStatus:     http.StatusBadRequest,
+			unchangedPhone: userPhone,
+		},
+		{
+			name:   "muted",
+			sender: userPhone,
+			text:   "config set muted true",
+			check: func(t *testing.T, root string) {
+				var user config.UserConfig
+				if err := json.Unmarshal(readUserFile(t, root, userPhone), &user); err != nil {
+					t.Fatalf("decode user: %v", err)
+				}
+				if !user.Muted {
+					t.Fatal("muted = false, want true")
+				}
+			},
+		},
+		{
+			name:   "prefixes comma separated",
+			sender: userPhone,
+			text:   "config set prefixes !,/",
+			check: func(t *testing.T, root string) {
+				var user config.UserConfig
+				if err := json.Unmarshal(readUserFile(t, root, userPhone), &user); err != nil {
+					t.Fatalf("decode user: %v", err)
+				}
+				if !reflect.DeepEqual(user.Prefixes, []string{"!", "/"}) {
+					t.Fatalf("prefixes = %v, want [! /]", user.Prefixes)
+				}
+			},
+		},
+		{
+			name:   "command alias",
+			sender: userPhone,
+			text:   "config set aliases.commands.g fly",
+			check: func(t *testing.T, root string) {
+				var user config.UserConfig
+				if err := json.Unmarshal(readUserFile(t, root, userPhone), &user); err != nil {
+					t.Fatalf("decode user: %v", err)
+				}
+				if got := user.Aliases.Commands["g"]; got != "fly" {
+					t.Fatalf("aliases.commands.g = %q, want fly", got)
+				}
+			},
+		},
+		{
+			name:           "invalid timezone rejected",
+			sender:         userPhone,
+			text:           "config set timezone Not/AZone",
+			wantStatus:     http.StatusBadRequest,
+			unchangedPhone: userPhone,
+		},
+		{
+			name:           "invalid bool rejected",
+			sender:         userPhone,
+			text:           "config set muted maybe",
+			wantStatus:     http.StatusBadRequest,
+			unchangedPhone: userPhone,
+		},
+		{
+			name:           "malformed command",
+			sender:         userPhone,
+			text:           "config set",
+			wantStatus:     http.StatusBadRequest,
+			unchangedPhone: userPhone,
+		},
+		{
+			name:       "denied sender",
+			sender:     deniedPhone,
+			text:       "config set timezone Europe/Paris",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "unknown sender",
+			sender:     "+15555550199",
+			text:       "config set timezone Europe/Paris",
+			wantStatus: http.StatusForbidden,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root, cfg, st := newTestConfig(t)
+			manager := New(Options{
+				Config: func() *config.Config { return cfg },
+				Store:  st,
+			})
+
+			var before []byte
+			var beforeExists bool
+			if tc.unchangedPhone != "" {
+				before, beforeExists = readFileMaybe(t, filepath.Join(root, "users", tc.unchangedPhone+".json"))
+			}
+
+			err := manager.HandlePatch(sdk.Transmission{
+				Command: "set",
+				Trigger: "config",
+				Text:    tc.text,
+				Sender:  tc.sender,
+			})
+			requireStatus(t, err, tc.wantStatus)
+
+			if tc.unchangedPhone != "" {
+				after, afterExists := readFileMaybe(t, filepath.Join(root, "users", tc.unchangedPhone+".json"))
+				if beforeExists != afterExists || !bytes.Equal(before, after) {
+					t.Fatalf("user file %s changed after rejected command", tc.unchangedPhone)
+				}
+			}
+			if tc.check != nil {
+				tc.check(t, root)
+			}
+		})
+	}
+}
+
+type forwardPayload struct {
+	User  string          `json:"user"`
+	Patch []sdk.Operation `json:"patch"`
+}
+
+// TestForwardSatelliteConfig covers plan §3.12: a <satellite>.<key> target is
+// resolved through satellite_ids and forwarded to the satellite's config
+// endpoint with a Bearer token, without touching the local user file.
+func TestForwardSatelliteConfig(t *testing.T) {
+	t.Run("mapped satellite is forwarded", func(t *testing.T) {
+		var (
+			gotMethod        string
+			gotPath          string
+			gotContentType   string
+			gotAuthorization string
+			gotBody          forwardPayload
+		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotMethod = r.Method
+			gotPath = r.URL.Path
+			gotContentType = r.Header.Get("Content-Type")
+			gotAuthorization = r.Header.Get("Authorization")
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Errorf("decode forwarded body: %v", err)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer server.Close()
+
+		root, cfg, st := newTestConfig(t)
+
+		// The sender needs the admin role for forwarding, and this user
+		// already has satellite_ids["wind-predictor"] = "alice".
+		cfg.Admin.Admins = append(cfg.Admin.Admins, userPhone)
+		satellite := cfg.Satellites["wind-predictor"]
+		satellite.Endpoint = server.URL
+		cfg.Satellites["wind-predictor"] = satellite
+
+		manager := New(Options{
+			Config: func() *config.Config { return cfg },
+			Store:  st,
+		})
+
+		before, beforeExists := readFileMaybe(t, filepath.Join(root, "users", userPhone+".json"))
+
+		err := manager.HandlePatch(sdk.Transmission{
+			Command: "set",
+			Trigger: "config",
+			Text:    `config set wind-predictor.subscriptions.0.personal_constraints.no_fly_days ["Sunday"]`,
+			Sender:  userPhone,
+		})
+		requireStatus(t, err, 0)
+
+		if gotMethod != http.MethodPost {
+			t.Fatalf("forwarded method = %q, want POST", gotMethod)
+		}
+		if gotPath != "/api/v1/config" {
+			t.Fatalf("forwarded path = %q, want /api/v1/config", gotPath)
+		}
+		if gotContentType != "application/json" {
+			t.Fatalf("forwarded content type = %q, want application/json", gotContentType)
+		}
+		if !strings.HasPrefix(gotAuthorization, "Bearer ") {
+			t.Fatalf("Authorization = %q, want Bearer token", gotAuthorization)
+		}
+		claims, err := auth.Verify(testSecret, strings.TrimPrefix(gotAuthorization, "Bearer "))
+		if err != nil {
+			t.Fatalf("forwarded token does not verify: %v", err)
+		}
+		if claims.Sub != userPhone {
+			t.Fatalf("token subject = %q, want %q", claims.Sub, userPhone)
+		}
+		if claims.Role != auth.Admin {
+			t.Fatalf("token role = %v, want admin", claims.Role)
+		}
+
+		if gotBody.User != "alice" {
+			t.Fatalf("forwarded user = %q, want alice", gotBody.User)
+		}
+		if len(gotBody.Patch) != 1 {
+			t.Fatalf("forwarded patch length = %d, want 1", len(gotBody.Patch))
+		}
+		op := gotBody.Patch[0]
+		if op.Path != "/subscriptions/0/personal_constraints/no_fly_days" {
+			t.Fatalf("forwarded path = %q", op.Path)
+		}
+		if !reflect.DeepEqual(op.Value, []any{"Sunday"}) {
+			t.Fatalf("forwarded value = %#v, want [Sunday]", op.Value)
+		}
+
+		after, afterExists := readFileMaybe(t, filepath.Join(root, "users", userPhone+".json"))
+		if beforeExists != afterExists || !bytes.Equal(before, after) {
+			t.Fatal("forwarding modified the local user file")
+		}
+	})
+
+	t.Run("unmapped satellite returns 400", func(t *testing.T) {
+		var calls int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&calls, 1)
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer server.Close()
+
+		_, cfg, st := newTestConfig(t)
+		satellite := cfg.Satellites["wind-predictor"]
+		satellite.Endpoint = server.URL
+		cfg.Satellites["wind-predictor"] = satellite
+
+		manager := New(Options{
+			Config: func() *config.Config { return cfg },
+			Store:  st,
+		})
+
+		// adminPhone is an admin but has no satellite_ids mapping.
+		err := manager.HandlePatch(sdk.Transmission{
+			Command: "set",
+			Trigger: "config",
+			Text:    "config set wind-predictor.display_name Alice",
+			Sender:  adminPhone,
+		})
+		requireStatus(t, err, http.StatusBadRequest)
+
+		if got := atomic.LoadInt32(&calls); got != 0 {
+			t.Fatalf("unmapped satellite made %d HTTP calls, want 0", got)
+		}
+	})
+}
+
+type patchRow struct {
+	phone     string
+	patch     string
+	appliedBy string
+}
+
+func queryPatches(t *testing.T, st *store.Store) []patchRow {
+	t.Helper()
+
+	rows, err := st.DB().QueryContext(context.Background(),
+		`SELECT phone, patch, applied_by FROM patches ORDER BY id`)
+	if err != nil {
+		t.Fatalf("query patches: %v", err)
+	}
+	defer rows.Close()
+
+	var out []patchRow
+	for rows.Next() {
+		var row patchRow
+		if err := rows.Scan(&row.phone, &row.patch, &row.appliedBy); err != nil {
+			t.Fatalf("scan patch row: %v", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate patches: %v", err)
+	}
+	return out
+}

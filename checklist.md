@@ -759,7 +759,7 @@ go test -v ./pkg/sdk -run '^TestApplyPatch$'
 **Session:** `opencode:ses_e6573420bffeqG5r3AAN9sB210` (T25 SDK RFC6902 patch)
 **Resume:** `git switch task/t25-sdk-patch && opencode run -s ses_e6573420bffeqG5r3AAN9sB210 "Resume T25 (SDK RFC6902 patch). Read plan.md and checklist.md, then continue."`
 
-### [ ] T26 — Config-manager satellite
+### [x] T26 — Config-manager satellite
 **Depends on:** T04, T06, T07, T08, T21, T23, T25
 **Branch:** `task/t26-configmgr`
 **Write first:** `internal/satellite/configmgr/configmgr_test.go::TestApplyPatch` — a patch changes `timezone` on disk and writes a `patches` row; `TestConfigSetCommand` — self edit allowed, other user denied for `User`, allowed for `Admin`, disallowed key rejected, `satellite_ids` is not user-editable; `TestForwardSatelliteConfig` — a `<satellite>.<key>` target resolves the sender via `satellite_ids`, POSTs `{user, patch}` to `/api/v1/config` with a Bearer token, and does not touch the user file; an unmapped satellite returns `400`.
@@ -769,8 +769,8 @@ go test -v ./pkg/sdk -run '^TestApplyPatch$'
 go test -v ./internal/satellite/configmgr -run '^(TestApplyPatch|TestConfigSetCommand|TestForwardSatelliteConfig)$'
 ```
 **Done when:** all PASS; tests use `t.TempDir()` and an `httptest` satellite.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e65657425ffe25RMgQuuidERaY` (T26 config-manager satellite)
+**Resume:** `git switch task/t26-configmgr && opencode run -s ses_e65657425ffe25RMgQuuidERaY "Resume T26 (Config-manager satellite). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T27 — Admin-manager approvals
 **Depends on:** T04, T06, T08, T12, T25
