@@ -217,6 +217,14 @@ is a separate concern and does not affect `CheckAccess`.
   **before** trigger parsing.
 - `#thread-id` inside the message (e.g. `#jellyfin 2`) targets a specific thread;
   without a tag, the most recently active session for that phone wins.
+- A message intercepted by an active session is matched against that satellite's
+  configured command patterns **without** a trigger: a satellite declares a
+  reply pattern such as `<choice>` on the command that should handle session
+  input. The matched command's `endpoint + path` receives the standard envelope
+  with `thread_id` set. If no command matches, the message is logged and dropped.
+  The leading `#thread-id` token is removed before matching.
+- Session actions (`lock`/`extend`/`close`) arrive on `/message`; an empty
+  `thread_id` defaults to the satellite name, and an unknown action is rejected.
 - Sessions are intentionally not persisted; SQLite only records audit events.
 
 ### 3.8 Storage (SQLite)

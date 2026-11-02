@@ -24,6 +24,12 @@ type Enqueuer interface {
 	Enqueue(queue.Job) error
 }
 
+// SessionApplier applies a session lifecycle action. *router.Router implements
+// it; /message uses the same in-memory store as inbound dispatch.
+type SessionApplier interface {
+	ApplySessionAction(phone, satellite, thread string, action model.SessionAction) error
+}
+
 // MessageOptions configures the /message handler.
 type MessageOptions struct {
 	// Config returns the active configuration. A getter lets hot reload swap
@@ -31,6 +37,9 @@ type MessageOptions struct {
 	Config func() *config.Config
 	// Queue receives one job per accepted recipient.
 	Queue Enqueuer
+	// Sessions applies lock/extend/close actions carried by the envelope. Nil
+	// leaves session actions inert.
+	Sessions SessionApplier
 }
 
 type messageHandler struct {
@@ -83,6 +92,20 @@ func (h *messageHandler) handle(w http.ResponseWriter, r *http.Request, cfg *con
 	if h.options.Queue == nil {
 		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 		return
+	}
+
+	// Session actions are conversation state, not delivery: apply them once
+	// per accepted recipient before the outbound fan-out (plan §3.3, §3.7).
+	if outbound.Session != nil && h.options.Sessions != nil {
+		for _, recipient := range outbound.Recipients {
+			if auth.IsDenied(cfg, recipient) {
+				continue
+			}
+			if err := h.options.Sessions.ApplySessionAction(recipient, outbound.Satellite, outbound.ThreadID, *outbound.Session); err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+		}
 	}
 
 	provider := cfg.System.DefaultProvider

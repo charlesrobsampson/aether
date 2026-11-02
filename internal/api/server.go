@@ -40,6 +40,9 @@ type ServerOptions struct {
 	OnUnknown func(phone string)
 	// Queue receives outbound jobs from /message.
 	Queue Enqueuer
+	// Sessions applies session lifecycle actions from /message. Nil leaves
+	// them inert.
+	Sessions SessionApplier
 	// Registry mirrors a registered satellite into SQLite. A nil registry
 	// leaves /register-satellite unavailable (503).
 	Registry SatelliteStore
@@ -64,8 +67,9 @@ func NewServer(options ServerOptions) http.Handler {
 		OnUnknown: options.OnUnknown,
 	}))
 	mux.Handle("POST /message", NewMessageHandler(MessageOptions{
-		Config: options.Config,
-		Queue:  options.Queue,
+		Config:   options.Config,
+		Queue:    options.Queue,
+		Sessions: options.Sessions,
 	}))
 	mux.Handle("POST /register-satellite", NewRegisterHandler(RegisterOptions{
 		Config: options.Config,

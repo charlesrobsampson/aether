@@ -703,7 +703,7 @@ go test -v ./internal/router -run '^TestDispatch$'
 **Session:** `<fill at task start>`
 **Resume:** `<fill at task start: exact command for your CLI>`
 
-### [ ] T22 — Session routing
+### [x] T22 — Session routing
 **Depends on:** T09, T15, T16, T21
 **Branch:** `task/t22-session-routing`
 **Write first:** `internal/router/session_test.go::TestSessionRouting` — active session intercepts `2` before trigger parsing; `#jellyfin 2` targets that thread; expired session falls through to trigger parsing; `session.action=close` removes it.
@@ -713,8 +713,8 @@ go test -v ./internal/router -run '^TestDispatch$'
 go test -v ./internal/router -run '^TestSessionRouting$'
 ```
 **Done when:** PASS; sessions are never persisted.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6a5a7b43ffe5a2FN1cveCkSpf` (T22 session routing)
+**Resume:** `git switch task/t22-session-routing && opencode run -s ses_e6a5a7b43ffe5a2FN1cveCkSpf "Resume T22 (Session routing). Read plan.md and checklist.md, then continue."`
 
 ---
 

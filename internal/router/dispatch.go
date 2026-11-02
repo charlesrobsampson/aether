@@ -13,6 +13,7 @@ import (
 
 	"github.com/charlesrobsampson/aether/internal/config"
 	"github.com/charlesrobsampson/aether/internal/model"
+	"github.com/charlesrobsampson/aether/internal/session"
 	"github.com/charlesrobsampson/aether/internal/store"
 	"github.com/charlesrobsampson/aether/pkg/sdk"
 )
@@ -33,6 +34,10 @@ type transmission struct {
 // Dispatch routes one accepted inbound message. Every outcome is written to
 // route_log; failures are never returned to the sender and Dispatch never
 // generates a reply (plan §3.6).
+//
+// An active session intercepts the message before trigger parsing (plan §3.7):
+// the reply is matched against the session satellite's command patterns and
+// posted to the matched command's path.
 func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 	cfg := r.configSnapshot()
 	if cfg == nil {
@@ -56,6 +61,11 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 			Status:    "dropped",
 			Error:     "empty message",
 		})
+		return
+	}
+
+	if sess, reply, ok := r.resolveSession(in.Sender, text); ok {
+		r.dispatchSession(ctx, cfg, in, user, sess, reply)
 		return
 	}
 
@@ -86,53 +96,7 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 
 	// Patterns include the trigger, so the canonical text (aliases resolved)
 	// is what MatchCommand sees. Declaration order wins (plan §3.6).
-	for _, command := range route.Commands {
-		spec := commandSpec(command)
-		raw, matched := sdk.MatchCommand(canonical, spec)
-		if !matched {
-			continue
-		}
-
-		args, err := sdk.ConvertArgs(spec, raw, loc)
-		if err != nil {
-			r.record(ctx, store.RouteLog{
-				Direction: "inbound",
-				Sender:    in.Sender,
-				Satellite: route.Satellite,
-				Text:      canonical,
-				Status:    "failed",
-				Error:     err.Error(),
-			})
-			return
-		}
-
-		envelope := transmission{
-			Command:   command.Name,
-			Trigger:   route.Trigger,
-			Args:      args,
-			Text:      canonical,
-			Sender:    in.Sender,
-			Satellite: route.Satellite,
-		}
-		if err := r.post(ctx, route.Endpoint, command.Path, envelope); err != nil {
-			r.record(ctx, store.RouteLog{
-				Direction: "inbound",
-				Sender:    in.Sender,
-				Satellite: route.Satellite,
-				Text:      canonical,
-				Status:    "failed",
-				Error:     err.Error(),
-			})
-			return
-		}
-
-		r.record(ctx, store.RouteLog{
-			Direction: "inbound",
-			Sender:    in.Sender,
-			Satellite: route.Satellite,
-			Text:      canonical,
-			Status:    "dispatched",
-		})
+	if r.dispatchRoute(ctx, in, route, loc, canonical, canonical, "") {
 		return
 	}
 
@@ -144,6 +108,217 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 		Status:    "dropped",
 		Error:     "no matching command",
 	})
+}
+
+// dispatchRoute posts the first command in route whose pattern matches
+// matchText. envelopeText is what the satellite sees as text, and threadID is
+// carried through when non-empty. It reports whether a command matched, whether
+// or not the POST succeeded; the caller records a drop when nothing matched.
+func (r *Router) dispatchRoute(ctx context.Context, in model.Inbound, route config.RouteEntry, loc *time.Location, matchText, envelopeText, threadID string) bool {
+	for _, command := range route.Commands {
+		spec := commandSpec(command)
+		raw, matched := sdk.MatchCommand(matchText, spec)
+		if !matched {
+			continue
+		}
+
+		args, err := sdk.ConvertArgs(spec, raw, loc)
+		if err != nil {
+			r.record(ctx, store.RouteLog{
+				Direction: "inbound",
+				Sender:    in.Sender,
+				Satellite: route.Satellite,
+				Thread:    threadID,
+				Text:      envelopeText,
+				Status:    "failed",
+				Error:     err.Error(),
+			})
+			return true
+		}
+
+		envelope := transmission{
+			Command:   command.Name,
+			Trigger:   route.Trigger,
+			Args:      args,
+			Text:      envelopeText,
+			Sender:    in.Sender,
+			Satellite: route.Satellite,
+			ThreadID:  threadID,
+		}
+		if err := r.post(ctx, route.Endpoint, command.Path, envelope); err != nil {
+			r.record(ctx, store.RouteLog{
+				Direction: "inbound",
+				Sender:    in.Sender,
+				Satellite: route.Satellite,
+				Thread:    threadID,
+				Text:      envelopeText,
+				Status:    "failed",
+				Error:     err.Error(),
+			})
+			return true
+		}
+
+		r.record(ctx, store.RouteLog{
+			Direction: "inbound",
+			Sender:    in.Sender,
+			Satellite: route.Satellite,
+			Thread:    threadID,
+			Text:      envelopeText,
+			Status:    "dispatched",
+		})
+		return true
+	}
+	return false
+}
+
+// dispatchSession sends an intercepted reply to the session's satellite. The
+// reply is matched against that satellite's configured command patterns; a
+// satellite therefore declares a reply pattern (for example "<choice>") on the
+// command that should handle session input. No trigger is involved.
+func (r *Router) dispatchSession(ctx context.Context, cfg *config.Config, in model.Inbound, user config.UserConfig, sess session.Session, reply string) {
+	if strings.TrimSpace(reply) == "" {
+		r.record(ctx, store.RouteLog{
+			Direction: "inbound",
+			Sender:    in.Sender,
+			Satellite: sess.Satellite,
+			Thread:    sess.ThreadID,
+			Text:      reply,
+			Status:    "dropped",
+			Error:     "empty message",
+		})
+		return
+	}
+
+	route, ok := routeBySatellite(cfg, sess.Satellite)
+	if !ok {
+		r.record(ctx, store.RouteLog{
+			Direction: "inbound",
+			Sender:    in.Sender,
+			Satellite: sess.Satellite,
+			Thread:    sess.ThreadID,
+			Text:      reply,
+			Status:    "dropped",
+			Error:     "unknown session satellite",
+		})
+		return
+	}
+
+	loc, err := userLocation(user.Timezone)
+	if err != nil {
+		r.record(ctx, store.RouteLog{
+			Direction: "inbound",
+			Sender:    in.Sender,
+			Satellite: route.Satellite,
+			Thread:    sess.ThreadID,
+			Text:      reply,
+			Status:    "failed",
+			Error:     err.Error(),
+		})
+		return
+	}
+
+	if r.dispatchRoute(ctx, in, route, loc, reply, reply, sess.ThreadID) {
+		return
+	}
+
+	r.record(ctx, store.RouteLog{
+		Direction: "inbound",
+		Sender:    in.Sender,
+		Satellite: route.Satellite,
+		Thread:    sess.ThreadID,
+		Text:      reply,
+		Status:    "dropped",
+		Error:     "no matching command",
+	})
+}
+
+// resolveSession finds the live session that should receive text. A leading
+// "#thread-id" token selects that thread; otherwise the phone's most recently
+// active session wins (plan §3.7). The returned reply has the tag removed.
+func (r *Router) resolveSession(phone, text string) (session.Session, string, bool) {
+	if r == nil || r.sessions == nil {
+		return session.Session{}, "", false
+	}
+
+	if thread, reply, tagged := splitThreadTag(text); tagged {
+		for _, sess := range r.sessions.List(phone) {
+			if sess.ThreadID == thread {
+				return sess, reply, true
+			}
+		}
+		return session.Session{}, "", false
+	}
+
+	if sess, ok := r.sessions.MostRecent(phone); ok {
+		return sess, text, true
+	}
+	return session.Session{}, "", false
+}
+
+// splitThreadTag parses a leading "#thread-id" token. It reports false when the
+// text has no tag, so the caller can fall through to trigger parsing.
+func splitThreadTag(text string) (thread, reply string, ok bool) {
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "#") {
+		return "", "", false
+	}
+
+	fields := strings.Fields(text)
+	thread = strings.TrimPrefix(fields[0], "#")
+	if thread == "" {
+		return "", "", false
+	}
+	return thread, strings.TrimSpace(strings.TrimPrefix(text, fields[0])), true
+}
+
+// routeBySatellite returns the route whose satellite name matches.
+func routeBySatellite(cfg *config.Config, satellite string) (config.RouteEntry, bool) {
+	for _, route := range routesFromConfig(cfg) {
+		if route.Satellite == satellite {
+			return route, true
+		}
+	}
+	return config.RouteEntry{}, false
+}
+
+// ApplySessionAction applies a lock, extend, or close action to the session
+// identified by phone/satellite/thread. An empty thread defaults to the
+// satellite name (plan §3.3), an empty action is a no-op, and an unknown action
+// is rejected. It is called by the /message handler.
+func (r *Router) ApplySessionAction(phone, satellite, thread string, action model.SessionAction) error {
+	switch action.Action {
+	case "":
+		return nil
+	case "lock", "extend", "close":
+	default:
+		return fmt.Errorf("router: unknown session action %q", action.Action)
+	}
+
+	if r == nil || r.sessions == nil {
+		return nil
+	}
+
+	if thread == "" {
+		thread = satellite
+	}
+	ttl := session.DefaultTTL
+	if action.TTLSeconds > 0 {
+		ttl = time.Duration(action.TTLSeconds) * time.Second
+	}
+
+	switch action.Action {
+	case "lock":
+		r.sessions.StartWithTTL(phone, satellite, thread, ttl)
+	case "extend":
+		if !r.sessions.Extend(phone, satellite, thread, ttl) {
+			// A satellite that re-sends extend after a restart should not
+			// lose the thread, so a missing session is started instead.
+			r.sessions.StartWithTTL(phone, satellite, thread, ttl)
+		}
+	case "close":
+		r.sessions.Close(phone, satellite, thread)
+	}
+	return nil
 }
 
 // configSnapshot returns the active configuration, if any.

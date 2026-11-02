@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charlesrobsampson/aether/internal/config"
+	"github.com/charlesrobsampson/aether/internal/session"
 	"github.com/charlesrobsampson/aether/internal/store"
 )
 
@@ -30,13 +31,17 @@ type Options struct {
 	// Client is the outbound HTTP client. Nil uses a client with a 5 s
 	// timeout; tests inject httptest's client so no real network is used.
 	Client *http.Client
+	// Sessions holds the in-memory conversation state used to intercept a
+	// reply before trigger parsing (plan §3.7). Nil disables session routing.
+	Sessions *session.Store
 }
 
 // Router dispatches inbound messages to registered satellites.
 type Router struct {
-	config func() *config.Config
-	store  RouteLogger
-	client *http.Client
+	config   func() *config.Config
+	store    RouteLogger
+	client   *http.Client
+	sessions *session.Store
 }
 
 // New returns a Router. With no options it has no configuration source and
@@ -50,6 +55,7 @@ func New(options ...Options) *Router {
 	option := options[0]
 	r.config = option.Config
 	r.store = option.Store
+	r.sessions = option.Sessions
 	if option.Client != nil {
 		r.client = option.Client
 	}

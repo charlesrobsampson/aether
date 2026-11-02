@@ -18,6 +18,7 @@ can be tuned later without changing a contract.
 | 8 | Default rate limit / queue depth | 1 msg/s per provider, burst 5, queue depth 256; overridable via `limits` in `system.json`. |
 | 9 | Multi-repo CI | Each repo has its own job; the Aether job checks out `msg`/`wind-predictor` as siblings and generates a CI-only `go.work`. No committed `go.work`. |
 | 10 | `session.action` without `text` | Allowed for `lock`/`extend`/`close`; `text` is optional when a session action is present. |
+| 11 | Session continuation endpoint/path | An intercepted reply is matched against the session satellite's configured command patterns (no trigger) and POSTed to the matched command's `endpoint + path`. A satellite declares a reply pattern such as `<choice>`; no new config field is needed. |
 
 ## Follow-ups (non-blocking, tunable later)
 
