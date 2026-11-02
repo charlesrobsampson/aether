@@ -720,7 +720,7 @@ go test -v ./internal/router -run '^TestSessionRouting$'
 
 ## Phase 5 — SDK & satellites
 
-### [ ] T23 — SDK webhook & response
+### [x] T23 — SDK webhook & response
 **Depends on:** T01
 **Branch:** `task/t23-sdk-webhook`
 **Write first:** `pkg/sdk/webhook_test.go::TestSDKWebhook` — table: valid JSON, wrong method, wrong content type, malformed body; `SendResponse` writes JSON and the requested status; `TestSDKClient` — `NewClient` POSTs a `Response` to `/message` with `Authorization: Bearer` and returns an error on non-2xx.
@@ -730,8 +730,8 @@ go test -v ./internal/router -run '^TestSessionRouting$'
 go test -v ./pkg/sdk -run '^(TestSDKWebhook|TestSDKClient)$'
 ```
 **Done when:** both PASS; `sdk.Response` and `model.Outbound` marshal identically.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e65882a32ffe2xsFEog6zG0OyK` (T23 SDK webhook & response)
+**Resume:** `git switch task/t23-sdk-webhook && opencode run -s ses_e65882a32ffe2xsFEog6zG0OyK "Resume T23 (SDK webhook & response). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T24 — SDK `SessionManager`
 **Depends on:** T23
