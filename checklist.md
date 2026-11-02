@@ -746,7 +746,7 @@ go test -v ./pkg/sdk -run '^TestSDKSessionManager$'
 **Session:** `opencode:ses_e657914c0ffejWmU4DYJ35MXla` (T24 SDK SessionManager)
 **Resume:** `git switch task/t24-sdk-sessionmanager && opencode run -s ses_e657914c0ffejWmU4DYJ35MXla "Resume T24 (SDK SessionManager). Read plan.md and checklist.md, then continue."`
 
-### [ ] T25 — SDK RFC6902 patch
+### [x] T25 — SDK RFC6902 patch
 **Depends on:** T01
 **Branch:** `task/t25-sdk-patch`
 **Write first:** `pkg/sdk/patch_test.go::TestApplyPatch` — table: `add`, `replace`, `remove`, `test` success/failure, invalid pointer, missing path.
@@ -756,8 +756,8 @@ go test -v ./pkg/sdk -run '^TestSDKSessionManager$'
 go test -v ./pkg/sdk -run '^TestApplyPatch$'
 ```
 **Done when:** PASS; no external patch library.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6573420bffeqG5r3AAN9sB210` (T25 SDK RFC6902 patch)
+**Resume:** `git switch task/t25-sdk-patch && opencode run -s ses_e6573420bffeqG5r3AAN9sB210 "Resume T25 (SDK RFC6902 patch). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T26 — Config-manager satellite
 **Depends on:** T04, T06, T07, T08, T21, T23, T25
