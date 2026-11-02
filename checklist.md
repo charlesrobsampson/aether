@@ -824,7 +824,7 @@ go test -v ./internal/satellite/testsat -run '^TestReminderFlow$'
 **Session:** `opencode:ses_e63a8a46effe2CEHFsayAbwY4G` (T29 msg Messenger facade)
 **Resume:** `git switch task/t29-msg-messenger && git -C ../msg switch task/t29-msg-messenger && opencode run -s ses_e63a8a46effe2CEHFsayAbwY4G "Resume T29 (msg Messenger facade). Read plan.md and checklist.md, then continue."`
 
-### [ ] T30 — `msg` inbound forward
+### [x] T30 — `msg` inbound forward
 **Depends on:** T29
 **Branch:** `task/t30-msg-forward`
 **Write first:** `../msg/cmd/msg/forward_test.go::TestForwardInbound` — a normalized inbound message POSTs `{sender,text,provider,group_id,message_id}` with `X-Aether-Token`; on failure it retries a bounded number of times with backoff, then logs and returns without failing the receiver; no spool file is created.
@@ -834,8 +834,8 @@ go test -v ./internal/satellite/testsat -run '^TestReminderFlow$'
 (cd ../msg && go test -v ./cmd/msg -run '^TestForwardInbound$')
 ```
 **Done when:** PASS; forwarding disabled leaves existing behavior byte-identical.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e6389eb9affeChuFzGMN8c0trj` (T30 msg inbound forward)
+**Resume:** `git switch task/t30-msg-forward && git -C ../msg switch task/t30-msg-forward && opencode run -s ses_e6389eb9affeChuFzGMN8c0trj "Resume T30 (msg inbound forward). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T31 — Aether `msg` adapter
 **Depends on:** T11, T29
