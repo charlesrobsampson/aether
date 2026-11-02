@@ -811,7 +811,7 @@ go test -v ./internal/satellite/testsat -run '^TestReminderFlow$'
 > --short HEAD`) in your start request. Each repo gets its own commit; never mix
 > two repos in one commit, and never `git add` from a parent directory.
 
-### [ ] T29 — `msg` Messenger facade
+### [x] T29 — `msg` Messenger facade
 **Depends on:** T01
 **Branch:** `task/t29-msg-messenger`
 **Write first:** `../msg/client/messenger_test.go::TestMessengerFacade` — `NewMessenger` rejects unknown providers; a signal send hits the fake signal-cli endpoint with the right account/recipient/text; `false, nil` becomes an error; a `t.TempDir()` DB path is used (no `$HOME`).
@@ -821,8 +821,8 @@ go test -v ./internal/satellite/testsat -run '^TestReminderFlow$'
 (cd ../msg && go test -v ./client -run '^TestMessengerFacade$' && go test ./...)
 ```
 **Done when:** PASS; `git -C ../msg diff -- cmd/msg` is empty.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e63a8a46effe2CEHFsayAbwY4G` (T29 msg Messenger facade)
+**Resume:** `git switch task/t29-msg-messenger && git -C ../msg switch task/t29-msg-messenger && opencode run -s ses_e63a8a46effe2CEHFsayAbwY4G "Resume T29 (msg Messenger facade). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T30 — `msg` inbound forward
 **Depends on:** T29
