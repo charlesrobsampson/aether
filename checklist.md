@@ -772,7 +772,7 @@ go test -v ./internal/satellite/configmgr -run '^(TestApplyPatch|TestConfigSetCo
 **Session:** `opencode:ses_e65657425ffe25RMgQuuidERaY` (T26 config-manager satellite)
 **Resume:** `git switch task/t26-configmgr && opencode run -s ses_e65657425ffe25RMgQuuidERaY "Resume T26 (Config-manager satellite). Read plan.md and checklist.md, then continue."`
 
-### [ ] T27 — Admin-manager approvals
+### [x] T27 — Admin-manager approvals
 **Depends on:** T04, T06, T08, T12, T25
 **Branch:** `task/t27-adminmgr`
 **Write first:** `internal/satellite/adminmgr/adminmgr_test.go::TestApprovalFlow` — new number assigns the expected maintainer, `Approve` moves it to `approved_numbers`, idempotent repeat; `TestApprovalRotation` — round-robin across three maintainers; `TestApprovalExpiry` — a 7-day-old pending row is `expired` and a new message re-requests; `TestAdminMaintenance` — `!admin add/remove <phone>` updates `admins` and is rejected for a `User`.
@@ -782,8 +782,8 @@ go test -v ./internal/satellite/configmgr -run '^(TestApplyPatch|TestConfigSetCo
 go test -v ./internal/satellite/adminmgr -run '^Test(ApprovalFlow|ApprovalRotation|ApprovalExpiry|AdminMaintenance)$'
 ```
 **Done when:** all PASS; `last_assigned` only increments after a successful write.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e65469a87ffe9b7NdTMQw96taO` (T27 admin-manager approvals)
+**Resume:** `git switch task/t27-adminmgr && opencode run -s ses_e65469a87ffe9b7NdTMQw96taO "Resume T27 (Admin-manager approvals). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T28 — Test/reminder satellite
 **Depends on:** T12, T13, T20, T23, T24
