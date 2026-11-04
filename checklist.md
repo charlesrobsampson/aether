@@ -907,7 +907,7 @@ go build ./cmd/aether
 **Session:** `opencode:ses_e5b23187dffeGaDxx45v28F0iW` (T35 app wiring & cmd/aether)
 **Resume:** `git switch task/t35-app-wiring && opencode run -s ses_e5b23187dffeGaDxx45v28F0iW "Resume T35 (App wiring & cmd/aether). Read plan.md and checklist.md, then continue."`
 
-### [ ] T36 — Full-flow integration
+### [x] T36 — Full-flow integration
 **Depends on:** T35
 **Branch:** `task/t36-integration`
 **Write first:** `internal/integration/full_flow_test.go::TestFullFlow` — one flow: mint JWT → register a satellite → `/receive` `!watch sci-fi` → mock satellite gets typed payload → satellite responds `/message` with `session.lock` → user sends `2` → satellite closes → fake messenger has both outbound messages → bulk counter unchanged and outbound metric incremented.
@@ -918,8 +918,8 @@ go test -v ./internal/integration -run '^TestFullFlow$'
 go test -race ./...
 ```
 **Done when:** PASS under `-race`; no external services.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e59e1fc10ffezDooyIdvc0bXHN` (T36 full-flow integration)
+**Resume:** `git switch task/t36-integration && opencode run -s ses_e59e1fc10ffezDooyIdvc0bXHN "Resume T36 (Full-flow integration). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T37 — Docker & compose
 **Depends on:** T35
