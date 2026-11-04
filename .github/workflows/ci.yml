@@ -1,0 +1,140 @@
+name: CI
+
+"on":
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Each repository gets its own job. The cross-repo jobs check the siblings out at
+# the same directory level so the local replaces resolve, then generate a
+# CI-only go.work. No go.work is ever committed.
+jobs:
+  aether:
+    name: aether
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out aether
+        uses: actions/checkout@v4
+        with:
+          path: aether
+
+      - name: Check out msg
+        uses: actions/checkout@v4
+        with:
+          repository: charlesrobsampson/msg
+          path: msg
+          token: ${{ secrets.SIBLING_REPO_TOKEN }}
+
+      - name: Check out wind-predictor
+        uses: actions/checkout@v4
+        with:
+          repository: charlesrobsampson/wind-predictor
+          path: wind-predictor
+          token: ${{ secrets.SIBLING_REPO_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: aether/go.mod
+          cache-dependency-path: |
+            aether/go.sum
+            msg/go.sum
+            wind-predictor/go.sum
+
+      - name: Generate CI-only workspace
+        run: go work init ./aether ./msg ./wind-predictor
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l aether msg wind-predictor)"
+
+      - name: Vet
+        working-directory: aether
+        run: go vet ./...
+
+      - name: Test
+        working-directory: aether
+        run: go test ./...
+
+      - name: Build
+        working-directory: aether
+        run: go build ./...
+
+  msg:
+    name: msg
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out msg
+        uses: actions/checkout@v4
+        with:
+          repository: charlesrobsampson/msg
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        run: go build ./...
+
+  wind-predictor:
+    name: wind-predictor
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out wind-predictor
+        uses: actions/checkout@v4
+        with:
+          repository: charlesrobsampson/wind-predictor
+          path: wind-predictor
+
+      - name: Check out aether
+        uses: actions/checkout@v4
+        with:
+          repository: charlesrobsampson/aether
+          path: aether
+          token: ${{ secrets.SIBLING_REPO_TOKEN }}
+
+      - name: Check out msg
+        uses: actions/checkout@v4
+        with:
+          repository: charlesrobsampson/msg
+          path: msg
+          token: ${{ secrets.SIBLING_REPO_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: wind-predictor/go.mod
+          cache-dependency-path: |
+            aether/go.sum
+            msg/go.sum
+            wind-predictor/go.sum
+
+      - name: Generate CI-only workspace
+        run: go work init ./aether ./msg ./wind-predictor
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l aether msg wind-predictor)"
+
+      - name: Vet
+        working-directory: wind-predictor
+        run: go vet ./...
+
+      - name: Test
+        working-directory: wind-predictor
+        run: go test ./...
+
+      - name: Build
+        working-directory: wind-predictor
+        run: go build ./...

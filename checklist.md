@@ -937,7 +937,7 @@ go test -v ./internal/deploy -run '^TestComposeConfig$'
 **Session:** `<fill at task start>`
 **Resume:** `<fill at task start: exact command for your CLI>`
 
-### [ ] T38 — Docs & CI
+### [x] T38 — Docs & CI
 **Depends on:** T36, T37
 **Branch:** `task/t38-docs-ci`
 **Write first:** `internal/docs/docs_test.go::TestDocs` — `README.md` exists with a quick start and links this checklist; `docs/adding-a-satellite.md` and `docs/architecture.md` exist; every relative Markdown link resolves; `.github/workflows/ci.yml` parses with `gopkg.in/yaml.v3` and defines jobs for `aether`, `msg`, and `wind-predictor`; no `go.work` is committed.
@@ -948,8 +948,8 @@ go test -v ./internal/docs -run '^TestDocs$'
 ./scripts/check-docs.sh
 ```
 **Done when:** `--- PASS: TestDocs`; the script exits 0; CI YAML parses.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e59baf2a3ffeeLyyjRcU27NbvS` (T38 docs & CI)
+**Resume:** `git switch task/t38-docs-ci && opencode run -s ses_e59baf2a3ffeeLyyjRcU27NbvS "Resume T38 (Docs & CI). Read plan.md and checklist.md, then continue."`
 
 ---
 
