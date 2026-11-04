@@ -850,7 +850,7 @@ go test -v ./internal/transport -run '^TestMsgAdapter$'
 **Session:** `opencode:ses_e635097b7ffeiMo9JlecZSA7i6` (T31 Aether msg adapter)
 **Resume:** `git switch task/t31-msg-adapter && opencode run -s ses_e635097b7ffeiMo9JlecZSA7i6 "Resume T31 (Aether msg adapter). Read plan.md and checklist.md, then continue."`
 
-### [ ] T32 — wind-predictor notifier
+### [x] T32 — wind-predictor notifier
 **Depends on:** T23
 **Branch:** `task/t32-wind-notifier`
 **Write first:** `../wind-predictor/pkg/alerts/aether_test.go::TestAetherNotifier` — `AlertPayload` becomes text with title/body; the POST goes to `/message` with a Bearer token and `satellite: "wind-predictor"`; the recipient comes from `UserConfig.aether_recipient`; an empty recipient is a skipped delivery, not an error; non-2xx becomes an error.
@@ -860,8 +860,8 @@ go test -v ./internal/transport -run '^TestMsgAdapter$'
 (cd ../wind-predictor && go test -v ./pkg/alerts -run '^TestAetherNotifier$')
 ```
 **Done when:** PASS; existing `channels_test.go` still passes.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e60af46bfffeNCsRjxy6eupte7` (T32 wind-predictor notifier)
+**Resume:** `git switch task/t32-wind-notifier && opencode run -s ses_e60af46bfffeNCsRjxy6eupte7 "Resume T32 (wind-predictor notifier). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T33 — wind-predictor config endpoint
 **Depends on:** T25, T32
