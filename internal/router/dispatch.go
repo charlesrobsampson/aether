@@ -69,6 +69,13 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 		return
 	}
 
+	// Built-ins are internal handlers and take precedence over file
+	// satellites with the same trigger (plan §3.6).
+	if builtin, ok := r.resolveBuiltin(text); ok {
+		r.dispatchBuiltin(ctx, in, builtin, text)
+		return
+	}
+
 	route, canonical, ok := resolveRoute(cfg, user, text)
 	if !ok {
 		r.record(ctx, store.RouteLog{
@@ -108,6 +115,49 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 		Status:    "dropped",
 		Error:     "no matching command",
 	})
+}
+
+// resolveBuiltin returns the internal handler whose trigger is the first token
+// of text. Built-ins are checked in registration order, so the app controls
+// precedence.
+func (r *Router) resolveBuiltin(text string) (Builtin, bool) {
+	if r == nil {
+		return Builtin{}, false
+	}
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return Builtin{}, false
+	}
+	for _, builtin := range r.builtins {
+		if builtin.Trigger != "" && builtin.Trigger == fields[0] {
+			return builtin, true
+		}
+	}
+	return Builtin{}, false
+}
+
+// dispatchBuiltin runs one internal command and records its outcome. Built-in
+// handlers answer through the outbound queue directly; a failure is audited and
+// never returned to the transport.
+func (r *Router) dispatchBuiltin(ctx context.Context, in model.Inbound, builtin Builtin, text string) {
+	record := store.RouteLog{
+		Direction: "inbound",
+		Sender:    in.Sender,
+		Satellite: builtin.Satellite,
+		Text:      text,
+		Status:    "dispatched",
+	}
+	if builtin.Handle == nil {
+		record.Status = "failed"
+		record.Error = "built-in handler is not configured"
+		r.record(ctx, record)
+		return
+	}
+	if err := builtin.Handle(ctx, in, text); err != nil {
+		record.Status = "failed"
+		record.Error = err.Error()
+	}
+	r.record(ctx, record)
 }
 
 // dispatchRoute posts the first command in route whose pattern matches

@@ -893,7 +893,7 @@ go test -v ./internal/transport -run '^TestMsgAdapter$'
 
 ## Phase 7 — Binary, E2E, deploy
 
-### [ ] T35 — App wiring & `cmd/aether`
+### [x] T35 — App wiring & `cmd/aether`
 **Depends on:** T05, T06, T07, T08, T09, T10, T12, T13, T14, T15, T16, T17, T18, T21, T22, T26, T27, T28
 **Branch:** `task/t35-app-wiring`
 **Write first:** `internal/app/app_test.go::TestAppWiring` — `Run` on `:0` serves `/healthz`, reloads config, accepts an injected fake `Messenger`, and shuts down cleanly; `TestTokenCommand` — `app.RunToken([]string{"--sub","+1","--role","admin"})` prints a verifiable JWT; `TestBuiltinRoutes` — `!config`, `!admin`, `!remind`, and `!test` reach the internal handlers without any HTTP satellite; `TestSchedulesWired` — a `system.json` schedule fires on `FakeClock` and dispatches to the configured satellite.
@@ -904,8 +904,8 @@ go test -v ./internal/app -run '^(TestAppWiring|TestTokenCommand|TestBuiltinRout
 go build ./cmd/aether
 ```
 **Done when:** all PASS; binary builds.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e5b23187dffeGaDxx45v28F0iW` (T35 app wiring & cmd/aether)
+**Resume:** `git switch task/t35-app-wiring && opencode run -s ses_e5b23187dffeGaDxx45v28F0iW "Resume T35 (App wiring & cmd/aether). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T36 — Full-flow integration
 **Depends on:** T35

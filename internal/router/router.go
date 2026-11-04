@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charlesrobsampson/aether/internal/config"
+	"github.com/charlesrobsampson/aether/internal/model"
 	"github.com/charlesrobsampson/aether/internal/session"
 	"github.com/charlesrobsampson/aether/internal/store"
 )
@@ -18,6 +19,23 @@ const defaultClientTimeout = 5 * time.Second
 // RouteLogger records dispatch attempts. *store.Store implements it.
 type RouteLogger interface {
 	LogRoute(ctx context.Context, rec store.RouteLog) error
+}
+
+// Builtin is an internal command handler (plan §3.6). Built-ins take
+// precedence over file-registered satellites with the same trigger, and their
+// handlers run in-process instead of over HTTP.
+//
+// Handle receives the canonical text after prefix stripping, including the
+// trigger, and must return an error when the command is rejected. The app owns
+// the concrete handlers; the router only resolves precedence and audits the
+// outcome.
+type Builtin struct {
+	// Satellite is the internal satellite name recorded in route_log.
+	Satellite string
+	// Trigger is the first token that selects this handler.
+	Trigger string
+	// Handle runs the command.
+	Handle func(context.Context, model.Inbound, string) error
 }
 
 // Options configures a Router. Every field is optional so New() remains usable
@@ -34,6 +52,9 @@ type Options struct {
 	// Sessions holds the in-memory conversation state used to intercept a
 	// reply before trigger parsing (plan §3.7). Nil disables session routing.
 	Sessions *session.Store
+	// Builtins are internal command handlers, checked in order before any
+	// file-registered route.
+	Builtins []Builtin
 }
 
 // Router dispatches inbound messages to registered satellites.
@@ -42,6 +63,7 @@ type Router struct {
 	store    RouteLogger
 	client   *http.Client
 	sessions *session.Store
+	builtins []Builtin
 }
 
 // New returns a Router. With no options it has no configuration source and
@@ -56,6 +78,7 @@ func New(options ...Options) *Router {
 	r.config = option.Config
 	r.store = option.Store
 	r.sessions = option.Sessions
+	r.builtins = option.Builtins
 	if option.Client != nil {
 		r.client = option.Client
 	}
