@@ -863,7 +863,7 @@ go test -v ./internal/transport -run '^TestMsgAdapter$'
 **Session:** `opencode:ses_e60af46bfffeNCsRjxy6eupte7` (T32 wind-predictor notifier)
 **Resume:** `git switch task/t32-wind-notifier && opencode run -s ses_e60af46bfffeNCsRjxy6eupte7 "Resume T32 (wind-predictor notifier). Read plan.md and checklist.md, then continue."`
 
-### [ ] T33 — wind-predictor config endpoint
+### [x] T33 — wind-predictor config endpoint
 **Depends on:** T25, T32
 **Branch:** `task/t33-wind-config`
 **Write first:** `../wind-predictor/pkg/api/config_test.go::TestConfigEndpoint` — table: a patch to `/subscriptions/0/personal_constraints/no_fly_days` and `/alert_rules/0/min_desirability` returns `204` and rewrites only `users/<user>.json`; invalid `ValidateUser` result `400`; `/alert_channels/...` and `/stations/...` `422`; unknown user `404`; wrong method `405`; a failed validation leaves the file untouched.
@@ -873,8 +873,8 @@ go test -v ./internal/transport -run '^TestMsgAdapter$'
 (cd ../wind-predictor && go test -v ./pkg/api -run '^TestConfigEndpoint$')
 ```
 **Done when:** PASS; a failed validation leaves the original file untouched.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e5b4d6f2cffeTOcgnHyekcFXBG` (T33 wind-predictor config endpoint)
+**Resume:** `git switch task/t33-wind-config && opencode run -s ses_e5b4d6f2cffeTOcgnHyekcFXBG "Resume T33 (wind-predictor config endpoint). Read plan.md and checklist.md, then continue."`
 
 ### [ ] T34 — wind-predictor text prediction
 **Depends on:** T32
