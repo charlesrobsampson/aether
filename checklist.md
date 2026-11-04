@@ -876,7 +876,7 @@ go test -v ./internal/transport -run '^TestMsgAdapter$'
 **Session:** `opencode:ses_e5b4d6f2cffeTOcgnHyekcFXBG` (T33 wind-predictor config endpoint)
 **Resume:** `git switch task/t33-wind-config && opencode run -s ses_e5b4d6f2cffeTOcgnHyekcFXBG "Resume T33 (wind-predictor config endpoint). Read plan.md and checklist.md, then continue."`
 
-### [ ] T34 — wind-predictor text prediction
+### [x] T34 — wind-predictor text prediction
 **Depends on:** T32
 **Branch:** `task/t34-wind-text-predict`
 **Write first:** `../wind-predictor/pkg/api/predict_text_test.go::TestTextPredict` — `POST /api/v1/predict/text` with the Aether envelope `{"command":"fly","args":{"station":"FPS"},"sender":"+1..."}` returns `{"text": "..."}` with short lines; unknown station `404`; no model `503`; wrong method `405`.
@@ -886,8 +886,8 @@ go test -v ./internal/transport -run '^TestMsgAdapter$'
 (cd ../wind-predictor && go test -v ./pkg/api -run '^TestTextPredict$')
 ```
 **Done when:** PASS; JSON predict routes unchanged.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e5b361ed1ffeed9s2PUo2RPdR3` (T34 wind-predictor text prediction)
+**Resume:** `git switch task/t34-wind-text-predict && opencode run -s ses_e5b361ed1ffeed9s2PUo2RPdR3 "Resume T34 (wind-predictor text prediction). Read plan.md and checklist.md, then continue."`
 
 ---
 
