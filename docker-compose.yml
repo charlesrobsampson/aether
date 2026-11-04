@@ -1,0 +1,53 @@
+# Local development stack for Aether and the msg receiver sidecar.
+#
+#   docker compose up --build
+#   curl -fsS http://127.0.0.1:8080/healthz   # -> ok
+#
+# The build context is the parent directory because Aether's go.mod replaces
+# github.com/charlesrobsampson/msg with ../msg, matching the on-disk layout.
+#
+# The example config is mounted read-write so registration and hot reload work
+# during development. SQLite lives under examples/config/data (gitignored).
+# signal-cli is expected to run on the host or as your own sidecar; point the
+# provider's base_url at it in examples/config/system.json.
+services:
+  aether:
+    build:
+      context: ..
+      dockerfile: aether/Dockerfile
+    image: aether:local
+    container_name: aether
+    restart: unless-stopped
+    # Run as the launching user so the bind-mounted config is writable. Override
+    # AETHER_UID/AETHER_GID when your host user is not 1000:1000.
+    user: "${AETHER_UID:-1000}:${AETHER_GID:-1000}"
+    environment:
+      AETHER_CONFIG_DIR: /config
+      AETHER_JWT_SECRET: "${AETHER_JWT_SECRET:-dev-only-change-me}"
+      AETHER_INGRESS_TOKEN: "${AETHER_INGRESS_TOKEN:-}"
+    ports:
+      - "${AETHER_PORT:-8080}:8080"
+    volumes:
+      - ./examples/config:/config
+    depends_on:
+      - msg
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # The receiver shares the Aether image (both binaries are built into it) and
+  # forwards normalized inbound messages to /receive. Mount your msg profile at
+  # /home/aether/.config/msg and configure signal-cli for real delivery.
+  msg:
+    image: aether:local
+    container_name: aether-msg
+    restart: unless-stopped
+    command: ["msg", "signal-receiver", "--forward", "http://aether:8080/receive"]
+    environment:
+      HOME: /home/aether
+      MSG_FORWARD_URL: "http://aether:8080/receive"
+      AETHER_INGRESS_TOKEN: "${AETHER_INGRESS_TOKEN:-}"
+      SIGNAL_ACCOUNT: "${SIGNAL_ACCOUNT:-}"

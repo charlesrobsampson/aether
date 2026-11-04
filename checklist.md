@@ -921,9 +921,11 @@ go test -race ./...
 **Session:** `opencode:ses_e59e1fc10ffezDooyIdvc0bXHN` (T36 full-flow integration)
 **Resume:** `git switch task/t36-integration && opencode run -s ses_e59e1fc10ffezDooyIdvc0bXHN "Resume T36 (Full-flow integration). Read plan.md and checklist.md, then continue."`
 
-### [ ] T37 — Docker & compose
+### [x] T37 — Docker & compose
 **Depends on:** T35
 **Branch:** `task/t37-deploy`
+**Session:** `opencode:ses_e59cf26f8ffeVn3tg9jfXzBclX` (T37 Docker & compose)
+**Resume:** `git switch task/t37-deploy && opencode run -s ses_e59cf26f8ffeVn3tg9jfXzBclX "Resume T37 (Docker & compose). Read plan.md and checklist.md, then continue."`
 **Write first:** `internal/deploy/deploy_test.go::TestComposeConfig` — parses `docker-compose.yml`, asserts the `aether` service, healthcheck, non-root user, and the `msg` sidecar; `Dockerfile` is multi-stage and ends on Alpine (not scratch).
 **Implement:** `go get gopkg.in/yaml.v3`; `Dockerfile`, `docker-compose.yml`, `scripts/smoke.sh` (starts the binary with a temp config and curls `/healthz`).
 **Verify:**

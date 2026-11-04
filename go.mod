@@ -6,6 +6,7 @@ require (
 	github.com/charlesrobsampson/msg v0.0.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/robfig/cron/v3 v3.0.1
+	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.61.1
 )
 
