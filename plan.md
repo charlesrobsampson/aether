@@ -281,12 +281,28 @@ func NewMessenger(cfg MessengerConfig) (Messenger, error)
 - Aether defines its own `transport.Messenger` interface with the same shape and
   ships an adapter over `msg/client.Messenger`.
 - Outbound: Aether → `msg` library → signal-cli REST / openmessage.
-- Inbound: `msg signal-receiver` gains `--forward URL` (env `MSG_FORWARD_URL`) that
-  POSTs normalized `{sender, text, provider, group_id, message_id}` to
-  `/receive` with an optional `X-Aether-Token` header. Forwarding is best-effort:
-  failures are logged and retried with bounded backoff, and they never block the
-  existing DB write. The existing `/api/signal/webhook` behavior is unchanged when
-  the flag is absent.
+- Inbound: forwarding is **opt-in per `msg` profile** and disabled by default.
+  Each `~/.config/msg/config-<profile>.json` (or `config.json` for the default
+  profile) may contain:
+
+  ```json
+  "forwarding": {
+    "enabled": true,
+    "url": "http://127.0.0.1:8080/receive"
+  }
+  ```
+
+  Only a profile with `enabled: true` and a non-empty `url` forwards its
+  normalized `{sender, text, provider, group_id, message_id}` POST to `/receive`.
+  `msg` reads the active profile's config for each inbound message, so toggling
+  forwarding takes effect without restarting the receiver. The ingress token is
+  read only from `AETHER_INGRESS_TOKEN` and is never stored in config. Forwarding
+  is best-effort: failures are logged and retried with bounded backoff, and they
+  never block the existing DB write. When `signal-receiver` serves multiple
+  accounts, it resolves each account to its profile with
+  `FindProfileForAccount` and applies that profile's setting. The existing
+  `/api/signal/webhook` behavior is unchanged. The legacy `--forward` /
+  `MSG_FORWARD_URL` enable path is removed (A01).
 - Aether depends on `msg` via a `replace`/`go.work` entry during development.
 
 
@@ -508,7 +524,8 @@ no `prometheus/client_golang` dependency.
 
 | Decision | Resolution |
 |---|---|
-| `msg` integration | Library `Messenger` facade + `signal-receiver --forward URL`; CLI UX unchanged |
+| `msg` integration | Library `Messenger` facade; CLI UX unchanged except opt-in per-profile forwarding |
+| `msg` inbound forwarding | Opt-in per profile via `forwarding: {enabled, url}`; config re-read per message; token only from `AETHER_INGRESS_TOKEN`; the flag/env enable path is removed |
 | Wind-predictor config | RFC6902 patch; role check in Aether, schema validation in wind-predictor |
 | Prediction piping | `/api/v1/predict/{station}/text` in wind-predictor, trigger `fly` in Aether |
 | `/message` auth | JWT (HS256, Bearer) on all satellite/scheduler traffic |
@@ -525,6 +542,16 @@ no `prometheus/client_golang` dependency.
 | CI | Independent per-repo CI; Aether CI generates a `go.work` after checking out siblings |
 | Rate limits | 1 msg/s per provider, burst 5, queue depth 256, configurable under `limits` |
 | Session actions | `text` optional for `lock`/`extend`/`close` |
+
+## 7. Amendments
+
+Contracts may be amended after the initial build. Each amendment is an
+`A`-numbered task in [`amendments.md`](amendments.md), cites the sections it
+changes, and updates this plan in the same change.
+
+| ID | Sections | Summary |
+|---|---|---|
+| A01 | §3.10, §6 | Opt-in per-profile `msg` forwarding; removes the flag/env enable path. |
 
 ---
 *Prepared based on the architecture manifest and latest user feedback.*

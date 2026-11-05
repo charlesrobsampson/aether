@@ -67,6 +67,8 @@ to require `X-Aether-Token` on `/receive`.
   patterns, typed arguments, and the SDK contract.
 - [Plan](plan.md) — canonical contracts and acceptance criteria.
 - [Checklist](checklist.md) — dependency-ordered implementation tasks.
+- [Process](process.md) — approval gates, branches, session/resume, and the full gate.
+- [Amendments](amendments.md) — post-completion contract changes.
 - [Open questions](docs/open-questions.md) — resolved decisions and follow-ups.
 
 ## Development

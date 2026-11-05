@@ -58,6 +58,32 @@ func TestDocs(t *testing.T) {
 		}
 	})
 
+	t.Run("process docs", func(t *testing.T) {
+		for _, name := range []string{"process.md", "amendments.md"} {
+			info, err := os.Stat(filepath.Join(root, name))
+			if err != nil {
+				t.Errorf("%s: %v", name, err)
+				continue
+			}
+			if info.Size() == 0 {
+				t.Errorf("%s is empty", name)
+			}
+		}
+
+		for _, name := range []string{"checklist.md", "amendments.md"} {
+			if !linksTo(readFile(t, filepath.Join(root, name)), "process.md") {
+				t.Errorf("%s does not link to process.md", name)
+			}
+		}
+
+		amendments := readFile(t, filepath.Join(root, "amendments.md"))
+		for _, field := range []string{"**Amends:**", "**Why:**"} {
+			if !strings.Contains(amendments, field) {
+				t.Errorf("amendments.md has no %s field", field)
+			}
+		}
+	})
+
 	t.Run("relative links resolve", func(t *testing.T) {
 		for _, path := range markdownFiles(t, root) {
 			base := filepath.Dir(path)
@@ -201,6 +227,16 @@ func markdownLinks(text string) []string {
 		}
 	}
 	return targets
+}
+
+// linksTo reports whether text contains a relative Markdown link to target.
+func linksTo(text, target string) bool {
+	for _, raw := range markdownLinks(text) {
+		if rel, ok := localLink(raw); ok && filepath.ToSlash(rel) == target {
+			return true
+		}
+	}
+	return false
 }
 
 // localLink reports whether target is a repository-relative file reference and

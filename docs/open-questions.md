@@ -19,6 +19,7 @@ can be tuned later without changing a contract.
 | 9 | Multi-repo CI | Each repo has its own job; the Aether job checks out `msg`/`wind-predictor` as siblings and generates a CI-only `go.work`. No committed `go.work`. |
 | 10 | `session.action` without `text` | Allowed for `lock`/`extend`/`close`; `text` is optional when a session action is present. |
 | 11 | Session continuation endpoint/path | An intercepted reply is matched against the session satellite's configured command patterns (no trigger) and POSTed to the matched command's `endpoint + path`. A satellite declares a reply pattern such as `<choice>`; no new config field is needed. |
+| 12 | `msg` inbound forwarding | Opt-in per profile via `forwarding: {enabled, url}`; `msg` re-reads the active profile's config per inbound message; the token comes only from `AETHER_INGRESS_TOKEN`; the legacy `--forward` / `MSG_FORWARD_URL` enable path is removed (A01). |
 
 ## Follow-ups (non-blocking, tunable later)
 
