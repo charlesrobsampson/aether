@@ -35,7 +35,7 @@ gate, and `USER VERIFY`.
 
 ## Phase A1 — `msg` integration
 
-### [ ] A01 — Per-profile opt-in `msg` forwarding
+### [x] A01 — Per-profile opt-in `msg` forwarding
 **Depends on:** T30
 **Amends:** `plan.md` §3.10 (inbound forwarding contract); supersedes the T30 `--forward` / `MSG_FORWARD_URL` enable path.
 **Why:** forwarding must be opt-in per `msg` profile and toggleable without restarting the receiver.
@@ -52,8 +52,9 @@ gate, and `USER VERIFY`.
 (cd ../msg && go test ./...)
 ```
 **Done when:** both named tests print `--- PASS`; forwarding is off by default; only a profile with `forwarding.enabled: true` and a non-empty URL forwards; no `MSG_FORWARD_URL` or `--forward` enable path remains; the token is read only from `AETHER_INGRESS_TOKEN`; `git -C ../msg status --short` shows only intended files; `plan.md` and this file are updated in the Aether tick commit.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e59baf2a3ffeeLyyjRcU27NbvS` (A01 per-profile msg forwarding)
+**Resume:** `git switch amendment/a01-per-profile-forwarding && git -C ../msg switch amendment/a01-per-profile-forwarding && opencode run -s ses_e59baf2a3ffeeLyyjRcU27NbvS "Resume A01 (per-profile msg forwarding). Read plan.md, process.md, and amendments.md, then continue."`
+**Completed:** `2026-11-05` · `msg` commit `4f557f1` on `amendment/a01-per-profile-forwarding`.
 
 ---
 
