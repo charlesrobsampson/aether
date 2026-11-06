@@ -70,7 +70,7 @@ The amendments below make the existing at-least-once behavior explicit and
 observable. They are ordered: each depends on the one before it. Do not start
 A(nn) until A(nn-1) is verified and merged.
 
-### [ ] A02 — Bound every hop
+### [x] A02 — Bound every hop
 **Depends on:** A01
 **Amends:** `plan.md` §3.9 (outbound send deadline), §3.10 (provider and receiver timeouts), §6 (retry classification).
 **Why:** one hung HTTP call must not pin the webhook or Aether's only queue worker forever.
@@ -95,8 +95,9 @@ go test -v ./internal/transport -run '^TestStatusErrorMapping$'
 go test ./... && gofmt -l . && go vet ./... && go build ./...
 ```
 **Done when:** every named test prints `--- PASS`; no send path uses `http.Post`/`http.Get`; the receiver uses an `*http.Server` with all three timeouts; no queue send uses `context.Background()`; a blocked send cannot outlive `send_timeout_seconds`; both full gates are clean (the pre-existing repo-wide `msg` gofmt files remain out of scope); `git -C ../msg status --short` shows only intended files; `plan.md` and this file are updated in the Aether tick, which records the `../msg` commit hash.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e59baf2a3ffeeLyyjRcU27NbvS` (A02 bounded sends)
+**Resume:** `git switch amendment/a02-bounded-sends && git -C ../msg switch amendment/a02-bounded-sends && opencode run -s ses_e59baf2a3ffeeLyyjRcU27NbvS "Resume A02 (bounded sends). Read plan.md, process.md, and amendments.md, then continue."`
+**Completed:** `2026-11-05` · `msg` commit `4e40999` on `amendment/a02-bounded-sends`.
 
 ---
 

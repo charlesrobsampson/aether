@@ -194,6 +194,105 @@ func TestShutdown(t *testing.T) {
 	}
 }
 
+// blockingMessenger parks inside Send until its context ends, which lets tests
+// prove both the per-attempt deadline and forced-shutdown cancellation.
+type blockingMessenger struct {
+	started chan struct{}
+	ctxErr  chan error
+}
+
+func (m *blockingMessenger) Send(ctx context.Context, _, _ string) error {
+	select {
+	case m.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	select {
+	case m.ctxErr <- ctx.Err():
+	default:
+	}
+	return ctx.Err()
+}
+
+func (m *blockingMessenger) Name() string { return "blocking" }
+
+// TestSendTimeout verifies that one send attempt is bounded by SendTimeout.
+func TestSendTimeout(t *testing.T) {
+	messenger := &blockingMessenger{
+		started: make(chan struct{}, 1),
+		ctxErr:  make(chan error, 1),
+	}
+	q := newTestQueue(t, Options{
+		Depth:         8,
+		RatePerSecond: 1000,
+		Burst:         100,
+		Messenger:     messenger,
+		Clock:         testutil.NewFakeClock(testStart()),
+		Metrics:       metrics.New(),
+		SendTimeout:   20 * time.Millisecond,
+	})
+
+	if err := q.Enqueue(Job{Recipient: "+15555550102", Text: "hang", Provider: "fake"}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	waitSignal(t, messenger.started, "send start")
+	waitSignal(t, q.delivered, "timed-out delivery")
+
+	select {
+	case err := <-messenger.ctxErr:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("send context error = %v, want DeadlineExceeded", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("send context was never cancelled")
+	}
+}
+
+// TestShutdownCancelsInflightSend verifies a forced shutdown does not wait for
+// the full send timeout of an in-flight provider call.
+func TestShutdownCancelsInflightSend(t *testing.T) {
+	messenger := &blockingMessenger{
+		started: make(chan struct{}, 1),
+		ctxErr:  make(chan error, 1),
+	}
+	q := newTestQueue(t, Options{
+		Depth:         8,
+		RatePerSecond: 1000,
+		Burst:         100,
+		Messenger:     messenger,
+		Clock:         testutil.NewFakeClock(testStart()),
+		Metrics:       metrics.New(),
+		SendTimeout:   10 * time.Second,
+	})
+
+	if err := q.Enqueue(Job{Recipient: "+15555550102", Text: "hang", Provider: "fake"}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	waitSignal(t, messenger.started, "send start")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := q.Shutdown(ctx)
+	elapsed := time.Since(start)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown error = %v, want DeadlineExceeded", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("Shutdown took %s, want a prompt cancellation", elapsed)
+	}
+
+	select {
+	case got := <-messenger.ctxErr:
+		if !errors.Is(got, context.Canceled) {
+			t.Fatalf("send context error = %v, want Canceled", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight send was not cancelled")
+	}
+}
+
 // sentMessage is one observed delivery from channelMessenger.
 type sentMessage struct {
 	Recipient string

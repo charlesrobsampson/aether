@@ -40,6 +40,9 @@ type LimitsConfig struct {
 	RatePerSecond float64 `json:"rate_per_second"`
 	Burst         int     `json:"burst"`
 	QueueDepth    int     `json:"queue_depth"`
+	// SendTimeoutSeconds bounds one outbound send attempt. Zero means the
+	// queue default (10s).
+	SendTimeoutSeconds int `json:"send_timeout_seconds"`
 }
 
 type ProviderConfig struct {

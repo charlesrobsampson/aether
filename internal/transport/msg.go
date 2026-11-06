@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -50,9 +51,22 @@ func newMsgAdapter(inner msgclient.Messenger) (Messenger, error) {
 }
 
 // Send forwards the context, recipient, and text to the wrapped msg messenger
-// unchanged; any provider error is returned as-is.
+// and maps a typed provider status onto SendError so retry classification does
+// not depend on error strings.
 func (m *msgAdapter) Send(ctx context.Context, recipient, text string) error {
-	return m.inner.Send(ctx, recipient, text)
+	err := m.inner.Send(ctx, recipient, text)
+	if err == nil {
+		return nil
+	}
+	var statusErr *msgclient.StatusError
+	if errors.As(err, &statusErr) {
+		return &SendError{
+			StatusCode: statusErr.StatusCode,
+			RetryAfter: statusErr.RetryAfter,
+			Err:        err,
+		}
+	}
+	return err
 }
 
 // Name reports the underlying msg provider name.

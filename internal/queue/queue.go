@@ -25,10 +25,11 @@ var ErrNoMessenger = errors.New("queue: messenger is required")
 
 // Defaults mirror the limits documented in plan §3.14 and open-question #8.
 const (
-	defaultDepth   = 256
-	defaultRate    = 1.0
-	defaultBurst   = 5
-	defaultWorkers = 1
+	defaultDepth       = 256
+	defaultRate        = 1.0
+	defaultBurst       = 5
+	defaultWorkers     = 1
+	defaultSendTimeout = 10 * time.Second
 
 	// signalBuffer bounds the unexported test-observation channels. Sends are
 	// non-blocking, so a test that falls behind misses a notification rather
@@ -61,6 +62,9 @@ type Options struct {
 	Burst         int
 	// Workers is the number of delivery goroutines. Defaults to 1.
 	Workers int
+	// SendTimeout bounds one Messenger.Send attempt. Defaults to 10s; a
+	// non-positive value selects the default.
+	SendTimeout time.Duration
 	// Messenger performs the actual delivery.
 	Messenger transport.Messenger
 	// Clock defaults to the system clock.
@@ -75,13 +79,19 @@ type Options struct {
 
 // Queue is a bounded outbound delivery queue. It is safe for concurrent use.
 type Queue struct {
-	jobs      chan Job
-	messenger transport.Messenger
-	clock     Clock
-	muted     func(string) bool
-	metrics   *metrics.Registry
-	onError   func(Job, error)
-	limiter   *limiter
+	jobs        chan Job
+	messenger   transport.Messenger
+	clock       Clock
+	muted       func(string) bool
+	metrics     *metrics.Registry
+	onError     func(Job, error)
+	limiter     *limiter
+	sendTimeout time.Duration
+
+	// sendCtx is the parent of every per-attempt deadline. Forced shutdown
+	// cancels it so an in-flight provider call cannot outlive Shutdown.
+	sendCtx    context.Context
+	sendCancel context.CancelFunc
 
 	// mu guards closed and, through RLock, the send on jobs. Holding RLock
 	// while sending lets Shutdown wait for in-flight Enqueue calls instead of
@@ -121,6 +131,10 @@ func New(opts Options) (*Queue, error) {
 	if workers <= 0 {
 		workers = defaultWorkers
 	}
+	sendTimeout := opts.SendTimeout
+	if sendTimeout <= 0 {
+		sendTimeout = defaultSendTimeout
+	}
 	clock := opts.Clock
 	if clock == nil {
 		clock = systemClock{}
@@ -129,19 +143,23 @@ func New(opts Options) (*Queue, error) {
 	if registry == nil {
 		registry = metrics.Default
 	}
+	sendCtx, sendCancel := context.WithCancel(context.Background())
 
 	q := &Queue{
-		jobs:      make(chan Job, depth),
-		messenger: opts.Messenger,
-		clock:     clock,
-		muted:     opts.Muted,
-		metrics:   registry,
-		onError:   opts.OnError,
-		limiter:   newLimiter(rate, float64(burst)),
-		closing:   make(chan struct{}),
-		forceStop: make(chan struct{}),
-		delivered: make(chan struct{}, signalBuffer),
-		waiting:   make(chan struct{}, signalBuffer),
+		jobs:        make(chan Job, depth),
+		messenger:   opts.Messenger,
+		clock:       clock,
+		muted:       opts.Muted,
+		metrics:     registry,
+		onError:     opts.OnError,
+		limiter:     newLimiter(rate, float64(burst)),
+		sendTimeout: sendTimeout,
+		sendCtx:     sendCtx,
+		sendCancel:  sendCancel,
+		closing:     make(chan struct{}),
+		forceStop:   make(chan struct{}),
+		delivered:   make(chan struct{}, signalBuffer),
+		waiting:     make(chan struct{}, signalBuffer),
 	}
 
 	q.wg.Add(workers)
@@ -197,9 +215,11 @@ func (q *Queue) Shutdown(ctx context.Context) error {
 
 	select {
 	case <-done:
+		q.sendCancel()
 		return nil
 	case <-ctx.Done():
 		q.forceOnce.Do(func() { close(q.forceStop) })
+		q.sendCancel()
 		<-done
 		return ctx.Err()
 	}
@@ -248,12 +268,16 @@ func (q *Queue) dropRemaining() {
 	}
 }
 
-// deliver waits for a token, sends the job, and signals the test hook.
+// deliver waits for a token, sends the job with a bounded per-attempt deadline,
+// and signals the test hook.
 func (q *Queue) deliver(job Job) {
 	for {
 		now := q.clock.Now()
 		if q.limiter.allow(job.Provider, now) {
-			if err := q.messenger.Send(context.Background(), job.Recipient, job.Text); err != nil && q.onError != nil {
+			ctx, cancel := context.WithTimeout(q.sendCtx, q.sendTimeout)
+			err := q.messenger.Send(ctx, job.Recipient, job.Text)
+			cancel()
+			if err != nil && q.onError != nil {
 				q.onError(job, err)
 			}
 			q.signalDelivered()

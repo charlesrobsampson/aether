@@ -131,6 +131,7 @@ func Run(ctx context.Context, opts Options) error {
 		Depth:         limits.QueueDepth,
 		RatePerSecond: limits.RatePerSecond,
 		Burst:         limits.Burst,
+		SendTimeout:   time.Duration(limits.SendTimeoutSeconds) * time.Second,
 		Messenger:     messenger,
 		Clock:         clock,
 		Muted: func(recipient string) bool {

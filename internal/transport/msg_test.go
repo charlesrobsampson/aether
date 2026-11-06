@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	msgclient "github.com/charlesrobsampson/msg/client"
 
@@ -137,4 +138,34 @@ func TestMsgAdapter(t *testing.T) {
 			t.Fatalf("newMsgMessenger() error = %v, want wrapped %v", err, sentinel)
 		}
 	})
+}
+
+// TestStatusErrorMapping proves provider HTTP status metadata survives the
+// adapter so the queue can classify retries in A05.
+func TestStatusErrorMapping(t *testing.T) {
+	providerErr := &msgclient.StatusError{
+		Provider:   "signal",
+		StatusCode: 429,
+		RetryAfter: 2 * time.Second,
+		Body:       "slow down",
+	}
+	adapter, err := newMsgAdapter(&fakeMsgMessenger{name: "signal", err: providerErr})
+	if err != nil {
+		t.Fatalf("newMsgAdapter() error = %v", err)
+	}
+
+	err = adapter.Send(context.Background(), "+15555550102", "hi")
+	var sendErr *SendError
+	if !errors.As(err, &sendErr) {
+		t.Fatalf("Send() error = %v, want *SendError", err)
+	}
+	if sendErr.StatusCode != 429 {
+		t.Errorf("StatusCode = %d, want 429", sendErr.StatusCode)
+	}
+	if sendErr.RetryAfter != 2*time.Second {
+		t.Errorf("RetryAfter = %s, want 2s", sendErr.RetryAfter)
+	}
+	if !errors.Is(err, providerErr) {
+		t.Errorf("Send() error does not unwrap to the provider error")
+	}
 }

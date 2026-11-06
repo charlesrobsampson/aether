@@ -24,7 +24,7 @@ func TestLoadConfig(t *testing.T) {
 		"server": {"port": 9090, "db_path": "/tmp/aether-test.db"},
 		"persona": {"name": "Aether", "prefixes": ["!", "/"]},
 		"auth": {"jwt_secret": "test-secret", "ingress_token": "ingress"},
-		"limits": {"rate_per_second": 2, "burst": 3, "queue_depth": 16},
+		"limits": {"rate_per_second": 2, "burst": 3, "queue_depth": 16, "send_timeout_seconds": 7},
 		"default_provider": "signal",
 		"providers": {"signal": {"type": "msg", "account": "+15555550100"}},
 		"schedules": [
@@ -108,6 +108,9 @@ func TestLoadConfig(t *testing.T) {
 				}
 				if got := cfg.System.Limits.QueueDepth; got != 16 {
 					t.Errorf("System.Limits.QueueDepth = %d, want 16", got)
+				}
+				if got := cfg.System.Limits.SendTimeoutSeconds; got != 7 {
+					t.Errorf("System.Limits.SendTimeoutSeconds = %d, want 7", got)
 				}
 				if got := len(cfg.System.Schedules); got != 1 {
 					t.Fatalf("len(System.Schedules) = %d, want 1", got)

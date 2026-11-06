@@ -7,7 +7,9 @@ package transport
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"time"
 )
 
 // Messenger delivers a text message to a single recipient.
@@ -18,6 +20,35 @@ import (
 type Messenger interface {
 	Send(ctx context.Context, recipient, text string) error
 	Name() string
+}
+
+// SendError carries provider status metadata so the queue can decide whether a
+// failure is retryable without parsing provider strings. Err is the underlying
+// provider error, when there is one.
+type SendError struct {
+	StatusCode int
+	RetryAfter time.Duration
+	Err        error
+}
+
+func (e *SendError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	if e.StatusCode > 0 {
+		return fmt.Sprintf("transport: provider returned HTTP %d", e.StatusCode)
+	}
+	return "transport: provider send failed"
+}
+
+func (e *SendError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
 }
 
 // Call is one recorded Send invocation on a Fake.
