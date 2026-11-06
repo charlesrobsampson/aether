@@ -21,6 +21,7 @@ import (
 
 	"github.com/charlesrobsampson/aether/internal/api"
 	"github.com/charlesrobsampson/aether/internal/config"
+	"github.com/charlesrobsampson/aether/internal/dispatch"
 	"github.com/charlesrobsampson/aether/internal/metrics"
 	"github.com/charlesrobsampson/aether/internal/model"
 	"github.com/charlesrobsampson/aether/internal/queue"
@@ -186,6 +187,23 @@ func Run(ctx context.Context, opts Options) error {
 		Builtins: builtins(configManager, adminManager, testManager),
 	})
 
+	// Inbound dispatch is asynchronous: /receive enqueues and returns 202, and
+	// one worker runs router.Dispatch (plan §3.2, §3.9).
+	dispatches, err := dispatch.New(dispatch.Options{
+		Depth:   limits.DispatchQueueDepth,
+		Handler: rt.Dispatch,
+	})
+	if err != nil {
+		return err
+	}
+	// This defer covers early returns after construction; the normal path
+	// below shuts the inbound queue down before the outbound queue.
+	defer func() {
+		drainCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		_ = dispatches.Shutdown(drainCtx)
+	}()
+
 	dispatcher := &scheduleDispatcher{
 		config: snapshot.Load,
 		store:  st,
@@ -253,9 +271,15 @@ func Run(ctx context.Context, opts Options) error {
 	handler := api.NewServer(api.ServerOptions{
 		Config: snapshot.Load,
 		Store:  st,
-		Inbound: func(ctx context.Context, in model.Inbound) {
+		Inbound: func(ctx context.Context, in model.Inbound) error {
+			if err := dispatches.Submit(ctx, in); err != nil {
+				if errors.Is(err, dispatch.ErrFull) {
+					return api.ErrQueueFull
+				}
+				return err
+			}
 			metrics.IncInboundMessages()
-			rt.Dispatch(ctx, in)
+			return nil
 		},
 		OnUnknown: func(phone string) {
 			// The admin-manager deduplicates against pending approvals, so a
@@ -291,6 +315,11 @@ func Run(ctx context.Context, opts Options) error {
 	defer cancel()
 
 	if err := server.Shutdown(stopCtx); err != nil && !errors.Is(err, http.ErrServerClosed) && runErr == nil {
+		runErr = err
+	}
+	// Stop inbound work first so no dispatch can enqueue new outbound jobs
+	// while the outbound queue is draining (plan §3.2, §3.9).
+	if err := dispatches.Shutdown(stopCtx); err != nil && runErr == nil {
 		runErr = err
 	}
 	// Draining the queue after the HTTP server stops accepts no new work and

@@ -374,6 +374,22 @@ func TestBuiltinRoutes(t *testing.T) {
 	if got := postJSON(t, baseURL+"/receive", `{"sender":"+15555550102","text":"!config set timezone America/New_York"}`, nil); got != http.StatusAccepted {
 		t.Fatalf("!config /receive status = %d, want 202", got)
 	}
+
+	// !admin add is handled by adminmgr.
+	if got := postJSON(t, baseURL+"/receive", `{"sender":"+15555550101","text":"!admin add +15555550108"}`, nil); got != http.StatusAccepted {
+		t.Fatalf("!admin /receive status = %d, want 202", got)
+	}
+
+	// !test is handled by testsat and replies through the queue. The dispatch
+	// worker is single-threaded, so seeing this reply proves the two commands
+	// above have finished their file writes.
+	if got := postJSON(t, baseURL+"/receive", `{"sender":"+15555550102","text":"!test"}`, nil); got != http.StatusAccepted {
+		t.Fatalf("!test /receive status = %d, want 202", got)
+	}
+	if call := messenger.wait(t); call.Text != "test received" {
+		t.Fatalf("!test reply = %q, want test received", call.Text)
+	}
+
 	userRaw, err := os.ReadFile(filepath.Join(root, "users", "+15555550102.json"))
 	if err != nil {
 		t.Fatalf("read user file: %v", err)
@@ -386,10 +402,6 @@ func TestBuiltinRoutes(t *testing.T) {
 		t.Fatalf("user timezone = %q, want America/New_York", user.Timezone)
 	}
 
-	// !admin add is handled by adminmgr.
-	if got := postJSON(t, baseURL+"/receive", `{"sender":"+15555550101","text":"!admin add +15555550108"}`, nil); got != http.StatusAccepted {
-		t.Fatalf("!admin /receive status = %d, want 202", got)
-	}
 	adminRaw, err := os.ReadFile(filepath.Join(root, "admin.json"))
 	if err != nil {
 		t.Fatalf("read admin.json: %v", err)
@@ -402,17 +414,16 @@ func TestBuiltinRoutes(t *testing.T) {
 		t.Fatalf("admin.json admins = %v, want +15555550108", admin.Admins)
 	}
 
-	// !test is handled by testsat and replies through the queue.
+	// !remind is handled by testsat and fires on the injected clock. A second
+	// !test reply proves the reminder timer was registered before we advance.
+	if got := postJSON(t, baseURL+"/receive", `{"sender":"+15555550102","text":"!remind me stretch in 1 minute"}`, nil); got != http.StatusAccepted {
+		t.Fatalf("!remind /receive status = %d, want 202", got)
+	}
 	if got := postJSON(t, baseURL+"/receive", `{"sender":"+15555550102","text":"!test"}`, nil); got != http.StatusAccepted {
 		t.Fatalf("!test /receive status = %d, want 202", got)
 	}
 	if call := messenger.wait(t); call.Text != "test received" {
-		t.Fatalf("!test reply = %q, want test received", call.Text)
-	}
-
-	// !remind is handled by testsat and fires on the injected clock.
-	if got := postJSON(t, baseURL+"/receive", `{"sender":"+15555550102","text":"!remind me stretch in 1 minute"}`, nil); got != http.StatusAccepted {
-		t.Fatalf("!remind /receive status = %d, want 202", got)
+		t.Fatalf("second !test reply = %q, want test received", call.Text)
 	}
 	clock.Advance(time.Minute)
 	if call := messenger.wait(t); call.Text != "stretch" {

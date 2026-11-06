@@ -20,6 +20,7 @@ import (
 	"github.com/charlesrobsampson/aether/internal/auth"
 	"github.com/charlesrobsampson/aether/internal/config"
 	"github.com/charlesrobsampson/aether/internal/metrics"
+	"github.com/charlesrobsampson/aether/internal/store"
 	"github.com/charlesrobsampson/aether/internal/testutil"
 	"github.com/charlesrobsampson/aether/internal/transport"
 	"github.com/charlesrobsampson/aether/pkg/sdk"
@@ -178,8 +179,8 @@ func TestFullFlow(t *testing.T) {
 	}
 
 	// The close removed the session, so the same bare "2" is now an unknown
-	// trigger and must not reach the satellite again. Dispatch is synchronous,
-	// so the count is settled when /receive returns.
+	// trigger and must not reach the satellite. The dispatch worker may still
+	// be running; shutdown drains it before the test returns.
 	if status, body := postJSON(t, baseURL+"/receive", `{"sender":"`+userPhone+`","text":"2"}`, nil); status != http.StatusAccepted {
 		t.Fatalf("post-close status = %d (%s), want 202", status, body)
 	}
@@ -205,9 +206,134 @@ func TestFullFlow(t *testing.T) {
 	t.Logf("outbound counter increased %d -> %d", before.OutboundJobs, after.OutboundJobs)
 }
 
+// TestReceiveReturnsBeforeSlowSatellite proves /receive only enqueues: a
+// satellite blocked in its handler cannot delay the 202, and the route log is
+// written by the dispatch worker afterwards.
+func TestReceiveReturnsBeforeSlowSatellite(t *testing.T) {
+	const userPhone = "+15555550102"
+
+	root, dbPath := testRootWithDB(t)
+
+	slow := newGatedSatellite()
+	satellite := httptest.NewServer(slow)
+	defer satellite.Close()
+
+	testutil.WriteJSON(t, filepath.Join(root, "satellites", "slow.json"), config.SatelliteConfig{
+		Name:     "slow",
+		Trigger:  "slow",
+		Endpoint: satellite.URL,
+		Commands: []config.CommandConfig{
+			{Name: "slow", Path: "/slow", Patterns: []string{"slow"}},
+		},
+	})
+
+	clock := newStepClock(time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC))
+	watcher := newFakeWatcher()
+	defer watcher.close()
+
+	baseURL, stop := startApp(t, app.Options{
+		ConfigDir: root,
+		Clock:     clock,
+		Watcher:   watcher,
+	}, newRecordingMessenger())
+	defer func() {
+		if err := stop(); err != nil {
+			t.Errorf("Run returned %v, want clean shutdown", err)
+		}
+	}()
+
+	start := time.Now()
+	status, body := postJSON(t, baseURL+"/receive", `{"sender":"`+userPhone+`","text":"!slow"}`, nil)
+	elapsed := time.Since(start)
+	if status != http.StatusAccepted {
+		t.Fatalf("/receive status = %d (%s), want 202", status, body)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("/receive took %s, want it to return before the satellite responds", elapsed)
+	}
+
+	// The dispatch worker is now blocked inside the satellite; release it.
+	select {
+	case <-slow.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch never reached the slow satellite")
+	}
+	close(slow.release)
+
+	select {
+	case call := <-slow.got:
+		if call.Path != "/slow" {
+			t.Fatalf("satellite path = %q, want /slow", call.Path)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("slow satellite never completed the dispatch")
+	}
+
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store for audit: %v", err)
+	}
+	defer st.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var count int
+		err := st.DB().QueryRow(
+			`SELECT COUNT(*) FROM route_log WHERE direction = 'inbound' AND satellite = 'slow'`,
+		).Scan(&count)
+		if err == nil && count == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("route_log inbound/slow rows = %d (err %v), want 1", count, err)
+		}
+		<-time.After(10 * time.Millisecond)
+	}
+}
+
+// gatedSatellite blocks every dispatch until the test releases it, so the test
+// can prove the HTTP ACK happened while the satellite was still working.
+type gatedSatellite struct {
+	started chan struct{}
+	release chan struct{}
+	got     chan recordedCall
+	once    sync.Once
+}
+
+func newGatedSatellite() *gatedSatellite {
+	return &gatedSatellite{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		got:     make(chan recordedCall, 1),
+	}
+}
+
+func (s *gatedSatellite) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	transmission, err := sdk.ParseWebhook(r)
+	if err != nil {
+		http.Error(w, "bad envelope", http.StatusBadRequest)
+		return
+	}
+	s.once.Do(func() { close(s.started) })
+	<-s.release
+	select {
+	case s.got <- recordedCall{Transmission: transmission, Path: r.URL.Path}:
+	default:
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 // testRoot copies the example tree into a temp dir, points SQLite at a temp
 // file, disables background schedules, and pins the JWT secret.
 func testRoot(t *testing.T) string {
+	t.Helper()
+	root, _ := testRootWithDB(t)
+	return root
+}
+
+// testRootWithDB is testRoot plus the SQLite path, for tests that inspect the
+// audit tables while the app is running.
+func testRootWithDB(t *testing.T) (string, string) {
 	t.Helper()
 
 	root := testutil.TempConfig(t)
@@ -215,11 +341,12 @@ func testRoot(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	cfg.System.Server.DBPath = filepath.Join(t.TempDir(), "aether.db")
+	dbPath := filepath.Join(t.TempDir(), "aether.db")
+	cfg.System.Server.DBPath = dbPath
 	cfg.System.Schedules = nil
 	cfg.System.Auth.JWTSecret = "integration-secret"
 	testutil.WriteJSON(t, filepath.Join(root, "system.json"), cfg.System)
-	return root
+	return root, dbPath
 }
 
 // recordingMessenger records deliveries and lets the test wait for one without

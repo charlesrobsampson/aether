@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -146,8 +147,9 @@ func TestReceiveHandler(t *testing.T) {
 			var unknownCalls []string
 			handler := NewReceiveHandler(ReceiveOptions{
 				Config: tc.cfg,
-				Handle: func(_ context.Context, msg model.Inbound) {
+				Handle: func(_ context.Context, msg model.Inbound) error {
 					handled = append(handled, msg)
+					return nil
 				},
 				OnUnknown: func(phone string) {
 					unknownCalls = append(unknownCalls, phone)
@@ -200,4 +202,63 @@ func TestReceiveHandler(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestReceiveQueueFull proves an accepted sender whose dispatch queue cannot
+// take the message receives 429 with a Retry-After hint instead of an ACK. Any
+// other submit failure is a 500 because the message was not accepted.
+func TestReceiveQueueFull(t *testing.T) {
+	const approved = "+15555550102"
+
+	cfg := func() *config.Config {
+		return &config.Config{
+			Admin: config.AdminConfig{ApprovedNumbers: []string{approved}},
+		}
+	}
+	body := `{"sender":"` + approved + `","text":"!test"}`
+
+	t.Run("queue full", func(t *testing.T) {
+		var handled int
+		handler := NewReceiveHandler(ReceiveOptions{
+			Config: cfg,
+			Handle: func(_ context.Context, _ model.Inbound) error {
+				handled++
+				return ErrQueueFull
+			},
+		})
+
+		req := httptest.NewRequest(http.MethodPost, "/receive", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("status = %d, want 429 (body %q)", rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Retry-After"); got != "1" {
+			t.Fatalf("Retry-After = %q, want 1", got)
+		}
+		if handled != 1 {
+			t.Fatalf("submit calls = %d, want 1", handled)
+		}
+	})
+
+	t.Run("other submit failure is 500", func(t *testing.T) {
+		handler := NewReceiveHandler(ReceiveOptions{
+			Config: cfg,
+			Handle: func(_ context.Context, _ model.Inbound) error {
+				return errors.New("dispatch unavailable")
+			},
+		})
+
+		req := httptest.NewRequest(http.MethodPost, "/receive", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500 (body %q)", rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Retry-After"); got != "" {
+			t.Fatalf("Retry-After = %q, want it unset for a non-retryable failure", got)
+		}
+	})
 }

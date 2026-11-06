@@ -22,17 +22,22 @@ import (
 // the limit keeps a malformed or hostile transport from tying up memory.
 const maxReceiveBody = 1 << 20
 
-// InboundHandler processes one inbound message that passed the transport access
-// checks. It is called synchronously, so the transport's 202 means the message
-// was accepted, not that any satellite has answered it.
-type InboundHandler func(context.Context, model.Inbound)
+// ErrQueueFull reports that the inbound dispatch queue could not accept a
+// message. The handler maps it to 429 so the transport retries with backoff.
+var ErrQueueFull = errors.New("api: inbound dispatch queue is full")
+
+// InboundHandler accepts one inbound message that passed the transport access
+// checks. It must return promptly: the transport's 202 means the message was
+// stored or queued, not that any satellite has answered it. ErrQueueFull
+// becomes 429 with Retry-After.
+type InboundHandler func(context.Context, model.Inbound) error
 
 // ReceiveOptions configures the /receive handler.
 type ReceiveOptions struct {
 	// Config returns the active configuration. A getter rather than a value
 	// lets hot reload swap approved/denied lists and the ingress token.
 	Config func() *config.Config
-	// Handle dispatches an accepted message. A nil handler acknowledges and
+	// Handle enqueues an accepted message. A nil handler acknowledges and
 	// drops the message.
 	Handle InboundHandler
 	// OnUnknown is called once for a sender who is neither approved nor
@@ -88,7 +93,15 @@ func (h *receiveHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 	default:
 		if h.options.Handle != nil {
-			h.options.Handle(r.Context(), inbound)
+			if err := h.options.Handle(r.Context(), inbound); err != nil {
+				if errors.Is(err, ErrQueueFull) {
+					w.Header().Set("Retry-After", "1")
+					http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
+					return
+				}
+				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+				return
+			}
 		}
 		w.WriteHeader(http.StatusAccepted)
 	}

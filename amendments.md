@@ -101,7 +101,7 @@ go test ./... && gofmt -l . && go vet ./... && go build ./...
 
 ---
 
-### [ ] A03 — Decouple ACK from dispatch
+### [x] A03 — Decouple ACK from dispatch
 **Depends on:** A02
 **Amends:** `plan.md` §3.2 (enqueue then `202`, `429`), §3.9 (inbound dispatch queue), §3.10 (persist-then-ACK forwarding), §6 (async boundaries).
 **Why:** an ACK must mean stored or accepted, not that a satellite has answered.
@@ -125,8 +125,9 @@ go test -v ./internal/integration -run '^TestReceiveReturnsBeforeSlowSatellite$'
 go test ./... && gofmt -l . && go vet ./... && go build ./...
 ```
 **Done when:** the signal-cli webhook ACK does not wait on Aether; `/receive` returns `202` before a slow satellite finishes; a full inbound queue returns `429` with `Retry-After`; no inbound path blocks on a full queue; both gates are clean; `git -C ../msg status --short` shows only intended files; the tick records the `../msg` commit hash.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e59baf2a3ffeeLyyjRcU27NbvS` (A03 async boundaries)
+**Resume:** `git switch amendment/a03-async-boundaries && git -C ../msg switch amendment/a03-async-boundaries && opencode run -s ses_e59baf2a3ffeeLyyjRcU27NbvS "Resume A03 (async boundaries). Read plan.md, process.md, and amendments.md, then continue."`
+**Completed:** `2026-11-05` · `msg` commit `015728e` on `amendment/a03-async-boundaries`.
 
 ---
 
