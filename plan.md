@@ -62,8 +62,8 @@ them after T01.
 
 | Endpoint | Caller | Auth | Success | Errors |
 |---|---|---|---|---|
-| `POST /receive` | transport (`msg`, webhook) | loopback + optional `X-Aether-Token` | `202` | `400` malformed, `401` bad token |
-| `POST /message` | satellites, internal scheduler | JWT (`admin` or `maintainer`) | `202` | `400`, `401`, `403` |
+| `POST /receive` | transport (`msg`, webhook) | loopback + optional `X-Aether-Token` | `202` | `400` malformed, `401` bad token, `429` queue full |
+| `POST /message` | satellites, internal scheduler | JWT (`admin` or `maintainer`) | `202` | `400`, `401`, `403`, `429` queue full |
 | `POST /register-satellite` | admin-manager / operators | JWT (`admin` or `maintainer`) | `201` | `400`, `401`, `403`, `409` conflict |
 | `GET /healthz` | ops | none (loopback) | `200` | `503` |
 | `GET /metrics` | ops | none (loopback) | `200` | — |
@@ -88,6 +88,12 @@ binds a port.
   `202` and dropped silently (no error, no outbound). **Unknown** (not yet
   approved) senders trigger the admin-manager approval request exactly once per
   phone (deduplicated against pending approvals) and are dropped until approved.
+- The handler validates, deduplicates, and enqueues the message onto a bounded
+  inbound dispatch queue, then returns `202`; it does not wait for a satellite.
+  When the queue is full it returns `429` with `Retry-After: <seconds>`.
+- When `message_id` is present, `(sender, message_id)` is deduplicated for a
+  configurable TTL (default 15 minutes). A duplicate returns `202` and is not
+  dispatched again. An absent `message_id` skips dedupe.
 
 ### 3.3 `POST /message` (satellite/scheduler → Aether)
 
@@ -116,6 +122,8 @@ binds a port.
 - `session.action` is one of `lock`, `extend`, `close` (empty = no session change).
   `thread_id` defaults to the satellite name when a session action is present.
 - `text` is required unless a session action is present.
+- The handler enqueues the whole batch atomically. If the outbound queue cannot
+  accept every job it returns `429` with `Retry-After` and enqueues none.
 
 ### 3.4 Authentication (JWT)
 
@@ -200,12 +208,16 @@ is a separate concern and does not affect `CheckAccess`.
     "text": "remind me call bob in 5 minutes",
     "sender": "+1234567890",
     "satellite": "reminder",
-    "thread_id": "optional"
+    "thread_id": "optional",
+    "message_id": "optional-upstream-id"
   }
   ```
 
   `args` contains the converted (typed) values; metadata fields are always
-  present so a satellite can reply to the right user/thread.
+  present so a satellite can reply to the right user/thread. `message_id` is
+  copied verbatim from the inbound transport payload when present, omitted
+  otherwise, and recorded in `route_log` so a satellite and Aether share one
+  correlation identifier (A04).
 
 ### 3.7 Sessions & Threads
 
@@ -233,22 +245,45 @@ is a separate concern and does not affect `CheckAccess`.
 
 | Table | Purpose |
 |---|---|
-| `route_log` | inbound/outbound audit: direction, sender, recipient, satellite, thread, text, status, error, created_at |
+| `route_log` | inbound/outbound audit: direction, sender, recipient, satellite, thread, text, status, error, message_id, created_at |
+| `inbound_dedupe` | inbound idempotency keys: sender, message_id, seen_at (primary key `(sender, message_id)`) |
 | `satellites` | registry mirror: name, trigger, endpoint, config JSON, registered_by, timestamps |
 | `patches` | config patches: phone, patch JSON, applied_by, applied_at |
 | `approvals` | pending/resolved new-number requests: phone, maintainer, status, requested_at, resolved_at, resolved_by |
 
 `store.Open(path)` runs migrations on startup. `:memory:` is used by tests.
+Migrations add columns idempotently so an existing database keeps working.
+`inbound_dedupe` rows older than the dedupe TTL (default 15 minutes, §3.19) are
+purged opportunistically; the table is not a permanent message archive.
 
 ### 3.9 Outbound Queue
 
-- `internal/queue` exposes `Enqueue(job)`, a buffered channel, and a worker pool.
-- Workers call `transport.Messenger.Send(ctx, recipient, text)`.
+- `internal/queue` exposes `Enqueue(job)` and `EnqueueBatch(jobs)`, a bounded
+  channel, and a worker pool. `Enqueue` never blocks a caller: when the channel
+  cannot accept the job it returns `ErrFull` immediately.
+  `EnqueueBatch` is atomic — either every job is accepted or none is, and a
+  caller that cannot enqueue the whole batch gets `ErrFull` (A05).
+- Workers call `transport.Messenger.Send(ctx, recipient, text)` with a per-attempt
+  deadline (`limits.send_timeout_seconds`, default 10s) derived from the queue's
+  shutdown context. Shutdown cancels in-flight sends; it never waits forever
+  (A02).
 - A per-provider token bucket enforces rate limits (default 1 msg/s, burst 5,
   overridable via `limits` in `system.json`); a per-user `muted` flag in
   `users/<phone>.json` drops jobs at enqueue time (counted, not errored).
-- The queue is bounded (default depth 256) and drained on shutdown with a bounded
-  wait.
+- Failed sends are retried up to `limits.send_attempts` (default 3) with
+  exponential backoff (`limits.retry_backoff_ms`, default 500ms, capped at 30s).
+  Only transport/network errors, `429`, and `5xx` are retryable; `400`, `401`,
+  `403`, `404`, and `409` are terminal. A `429` response honours `Retry-After`
+  when present (A05).
+- A job that exhausts its attempts is dead-lettered: one `route_log` row with
+  `status = "dead_letter"` and the last error, plus `aether_dead_letter_total`.
+  Dead-lettering is best-effort and never blocks the worker (A05).
+- The queue is bounded (default depth 256). On graceful shutdown it drains within
+  a bounded wait; jobs still buffered after the deadline are counted as dropped
+  and the queue's only worker exits promptly (A02).
+- The default is one worker, which preserves per-provider delivery order. More
+  workers are allowed only with per-provider sharding; changing the default is
+  deferred until throughput requires it.
 
 ### 3.10 Messenger & `msg` Integration
 
@@ -296,13 +331,22 @@ func NewMessenger(cfg MessengerConfig) (Messenger, error)
   normalized `{sender, text, provider, group_id, message_id}` POST to `/receive`.
   `msg` reads the active profile's config for each inbound message, so toggling
   forwarding takes effect without restarting the receiver. The ingress token is
-  read only from `AETHER_INGRESS_TOKEN` and is never stored in config. Forwarding
-  is best-effort: failures are logged and retried with bounded backoff, and they
-  never block the existing DB write. When `signal-receiver` serves multiple
-  accounts, it resolves each account to its profile with
-  `FindProfileForAccount` and applies that profile's setting. The existing
-  `/api/signal/webhook` behavior is unchanged. The legacy `--forward` /
-  `MSG_FORWARD_URL` enable path is removed (A01).
+  read only from `AETHER_INGRESS_TOKEN` and is never stored in config. After the
+  SQLite write, forwarding is handed to a bounded per-profile worker; the
+  signal-cli webhook ACK does not wait for Aether (A03). The worker retries
+  network errors, `429`, and `5xx` with bounded backoff, honours `Retry-After`,
+  and treats `400`/`401`/`403`/`404`/`409` as terminal (A02). When the forward
+  queue is full the incoming (newest) forward is dropped and counted in
+  `msg_forward_dropped_total{reason="queue_full"}`; it never blocks ingestion.
+  When `signal-receiver` serves multiple accounts, it resolves each account to
+  its profile with `FindProfileForAccount` and applies that profile's setting.
+  The existing `/api/signal/webhook` behavior is unchanged. The legacy `--forward`
+  / `MSG_FORWARD_URL` enable path is removed (A01).
+- Outbound provider calls use one shared `http.Client` with a bounded timeout
+  (default 10s) and a request context, so a hung signal-cli or openmessage
+  process cannot pin Aether's only queue worker (A02).
+- `signal-receiver` runs an `http.Server` with `ReadHeaderTimeout`, `ReadTimeout`,
+  and `WriteTimeout` rather than bare `http.ListenAndServe` (A02).
 - Aether depends on `msg` via a `replace`/`go.work` entry during development.
 
 
@@ -411,7 +455,16 @@ All JSON under `AETHER_CONFIG_DIR` (default `~/.config/aether`):
   "server": { "port": 8080, "db_path": "./data/aether.db" },
   "persona": { "name": "Aether", "prefixes": ["!", "/", "Aether "] },
   "auth": { "jwt_secret": "dev-only-change-me" },
-  "limits": { "rate_per_second": 1, "burst": 5, "queue_depth": 256 },
+  "limits": {
+    "rate_per_second": 1,
+    "burst": 5,
+    "queue_depth": 256,
+    "dispatch_queue_depth": 256,
+    "send_timeout_seconds": 10,
+    "send_attempts": 3,
+    "retry_backoff_ms": 500,
+    "dedupe_ttl_seconds": 900
+  },
   "default_provider": "signal",
   "providers": {
     "signal": { "type": "msg", "account": "+1234567890" }
@@ -458,8 +511,16 @@ deletion; registration never appends to a stale file. Shape:
 `satellite_ids` maps an Aether phone to a satellite's own user ID and is
 admin-managed; it is **not** part of the user `!config set` whitelist.
 
-`/metrics` uses a hand-written Prometheus text exposition (counters and gauges);
-no `prometheus/client_golang` dependency.
+`/metrics` uses a hand-written Prometheus text exposition (counters, gauges, and
+summaries); no `prometheus/client_golang` dependency. §3.19 lists the reliability
+metric families.
+
+`limits` values are optional; omitted fields take the defaults shown. They are
+read when the app starts and are not hot-reloaded. `dispatch_queue_depth` bounds
+the inbound dispatch queue (§3.2), `send_timeout_seconds` bounds one outbound
+send attempt, `send_attempts` is the total attempt count including the first,
+`retry_backoff_ms` is the base for exponential backoff, and
+`dedupe_ttl_seconds` is the inbound idempotency window.
 
 ### 3.15 Satellite Registration
 
@@ -496,6 +557,69 @@ no `prometheus/client_golang` dependency.
 - `signal-cli`/`msg` run as sidecars or host processes; Aether only needs the
   messenger endpoint/credentials.
 
+### 3.19 Delivery Semantics & Observability
+
+**Delivery semantics**
+
+- **Inbound is at-least-once.** `msg` persists the message, then enqueues the
+  forward; a retry may deliver the same message twice. When `message_id` is
+  present, Aether dedupes `(sender, message_id)` for `limits.dedupe_ttl_seconds`
+  (default 900). A duplicate returns `202` and is not dispatched again. A missing
+  `message_id` skips dedupe and is documented as best-effort.
+- **`/receive` means accepted, not dispatched.** It validates, authenticates,
+  dedupes, enqueues onto the bounded inbound dispatch queue, and returns `202`.
+  A bounded dispatch worker calls `router.Dispatch`. A full queue returns `429`
+  with `Retry-After`; the caller must retry with backoff (A03, A04).
+- **Outbound is at-least-once within bounded attempts.** `/message` enqueues the
+  whole batch atomically before returning `202`. If the queue cannot accept every
+  job it returns `429` with `Retry-After` and enqueues none. After
+  `limits.send_attempts`, a job is dead-lettered rather than retried forever
+  (A05).
+- **Retry classification is shared by both repos.** Retry transport/network
+  errors, `429`, and `5xx`. Never retry `400`, `401`, `403`, `404`, or `409`.
+  `429` is the only retryable `4xx`; when `Retry-After` is present, wait at least
+  that long. Backoff is exponential with jitter, capped at 30s.
+- **No durable outbox yet.** Queued work is lost on a crash; `msg`'s SQLite row
+  remains the manual replay source. A durable outbox is deferred (A07 is
+  reserved and not scheduled) until restart-loss becomes unacceptable.
+
+**Correlation**
+
+`message_id` flows from the transport payload into the satellite envelope and
+`route_log`. Log lines for receive, dispatch, forward, retry, and dead-letter
+include `message_id` when present plus the satellite/profile name. Phone numbers
+and message IDs are never used as metric labels.
+
+**Metrics**
+
+All metrics use the hand-written Prometheus text exposition in
+`internal/metrics` (Aether) and an equivalent small registry in `msg`. Latency is
+exposed as a summary (`_sum` and `_count`; no client-side quantiles). `/metrics`
+stays loopback-only.
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `aether_receive_requests_total` | counter | `result` | `/receive` outcomes: `accepted`, `duplicate`, `queue_full`, `bad_request`, `unauthorized` |
+| `aether_inbound_messages_total` | counter | — | accepted inbound messages (existing) |
+| `aether_inbound_queue_depth` | gauge | — | inbound dispatch queue occupancy |
+| `aether_dispatch_duration_seconds` | summary | `status` | `router.Dispatch` latency |
+| `aether_dispatch_failures_total` | counter | `reason` | satellite post/timeout/parse failures |
+| `aether_dedupe_hits_total` | counter | — | inbound duplicates suppressed |
+| `aether_queue_full_total` | counter | `queue` | rejected work (`queue = "inbound"` or `"outbound"`) |
+| `aether_outbound_jobs_total` | counter | — | outbound jobs accepted (existing) |
+| `aether_outbound_queue_depth` | gauge | — | outbound queue occupancy |
+| `aether_outbound_send_duration_seconds` | summary | `provider`, `result` | one send attempt |
+| `aether_outbound_send_failures_total` | counter | `provider`, `reason` | failed send attempts |
+| `aether_outbound_retries_total` | counter | `provider`, `reason` | retries scheduled |
+| `aether_dead_letter_total` | counter | `provider` | jobs exhausted and dead-lettered |
+| `aether_dropped_total` | counter | — | jobs dropped without delivery (existing) |
+| `msg_forward_attempts_total` | counter | `profile`, `result` | forward POST outcomes (`ok`, `retryable`, `terminal`, `queue_full`) |
+| `msg_forward_duration_seconds` | summary | `profile`, `result` | forward POST latency |
+| `msg_forward_queue_depth` | gauge | `profile` | bounded forward queue occupancy |
+| `msg_forward_dropped_total` | counter | `profile`, `reason` | forwards dropped (`queue_full`, `terminal`, `shutdown`) |
+
+Labels are limited to small enums and the configured profile/provider names.
+
 ## 4. Risks & Mitigations
 
 | Risk | Impact | Mitigation |
@@ -505,6 +629,11 @@ no `prometheus/client_golang` dependency.
 | Scheduler drift / DST | Missed reminders | UTC storage, injectable clock, timezone tests |
 | Unauthorized config changes | Security breach | JWT roles, path-safe registry writes, access checks in config-manager |
 | Unbounded outbound retries | Provider bans | Token bucket, capped retries, dead-letter log |
+| Slow or hung upstream (signal-cli, satellite, Aether) | Pinned workers, stalled ACKs | Per-hop timeouts and contexts; ACK before dispatch; async forwarding |
+| Retry-induced duplicate delivery | Commands run twice | `(sender, message_id)` dedupe (15m TTL); `message_id` in envelope and `route_log` |
+| Queue saturation | Blocked handlers, request pile-up | Bounded queues, fail-fast enqueue, `429` + `Retry-After` |
+| Silent delivery failure | Lost replies with a `202` already returned | `OnError` wired, dead-letter `route_log` rows, failure metrics |
+| Crash loses queued work | Message loss until manual replay | Accepted for now; durable outbox deferred to A07 |
 
 ## 5. Acceptance Criteria
 
@@ -517,6 +646,17 @@ no `prometheus/client_golang` dependency.
 - Multi-step sessions lock, extend, close, and support `#thread-id`.
 - `wind-predictor` sends scheduled alerts through Aether and exposes config and
   text-prediction endpoints.
+- `/receive` returns `202` after enqueue; a slow satellite cannot delay it, and a
+  full inbound queue returns `429` with `Retry-After`.
+- A repeated `/receive` with the same `(sender, message_id)` dispatches once
+  within the dedupe TTL.
+- A full outbound queue rejects the whole `/message` batch with `429` and
+  `Retry-After`, enqueueing nothing.
+- Outbound sends retry only network errors, `429`, and `5xx`, honour
+  `Retry-After`, and dead-letter after the configured attempts; terminal `4xx`
+  is never retried.
+- `/metrics` exposes the §3.19 Aether families, and `msg` exposes its forward
+  families.
 - `go test ./...`, `go vet ./...`, and `gofmt -l .` are clean in CI.
 - README documents adding a satellite and configuring triggers.
 
@@ -534,13 +674,21 @@ no `prometheus/client_golang` dependency.
 | Config root | `AETHER_CONFIG_DIR` + explicit `root` argument; tests use `t.TempDir()` |
 | Reminders | `AfterFunc` for relative/absolute, `robfig/cron` for repeating schedules |
 | Config format | JSON only (manifest's YAML is superseded) |
-| `msg` forward failures | HTTP POST + bounded retry; no spool; msg's DB remains the replay source |
+| `msg` forward failures | Persist-then-ACK; bounded per-profile forward worker; retry network/`429`/`5xx` only; no spool; msg's DB remains the manual replay source |
+| Queue full | `429` + `Retry-After`; `/message` batches are all-or-nothing; `429` is the only retryable `4xx` |
+| Retry classification | Retry network errors, `429`, and `5xx`; `400`, `401`, `403`, `404`, `409` are terminal |
+| Inbound delivery | At-least-once with `(sender, message_id)` dedupe for 15 minutes |
+| Outbound delivery | At-least-once within bounded attempts, then dead-letter |
+| Async boundaries | `msg` ACKs after its DB write; `/receive` returns `202` after enqueue; dispatch runs on a bounded worker |
+| Correlation | `message_id` propagates into the satellite envelope and `route_log` |
+| Observability | Hand-rolled Prometheus counters/gauges/summaries in both repos; metric families in §3.19 |
+| Durable outbox | Deferred; A07 is reserved and not scheduled until restart-loss matters |
 | Approved groups | Opaque conversation ID, matched literally |
 | User `!config set` keys | `timezone`, `prefixes`, `muted`, satellite/command aliases; whitelist is extensible |
 | Wind-predictor config | User files only: no-fly days, personal windows, alert timing, per-rule thresholds; no credentials/global keys |
 | Service token | `AETHER_TOKEN` env first, 0600 `aether.token` file fallback |
 | CI | Independent per-repo CI; Aether CI generates a `go.work` after checking out siblings |
-| Rate limits | 1 msg/s per provider, burst 5, queue depth 256, configurable under `limits` |
+| Rate limits | 1 msg/s per provider, burst 5, outbound and inbound queue depth 256, configurable under `limits` |
 | Session actions | `text` optional for `lock`/`extend`/`close` |
 
 ## 7. Amendments
@@ -552,6 +700,12 @@ changes, and updates this plan in the same change.
 | ID | Sections | Summary |
 |---|---|---|
 | A01 | §3.10, §6 | Opt-in per-profile `msg` forwarding; removes the flag/env enable path. |
+| A02 | §3.9, §3.10, §6 | Bound every hop: provider/queue contexts, `signal-receiver` server timeouts, retry classification. |
+| A03 | §3.2, §3.9, §3.10, §6 | Decouple ACK from dispatch: `msg` persist-then-ACK + forward worker; `/receive` enqueue + dispatch worker; inbound queue-full `429`. |
+| A04 | §3.2, §3.6, §3.8, §3.19, §6 | Inbound idempotency by `(sender, message_id)`; propagate `message_id` to envelope and `route_log`. |
+| A05 | §3.3, §3.9, §3.19, §6 | Outbound retries, dead-letter, all-or-nothing batch enqueue, queue-full `429`. |
+| A06 | §3.19, §6 | Prometheus observability and correlation across both repos. |
+| A07 | — | Reserved: durable `msg` outbox + replay. Not scheduled. |
 
 ---
 *Prepared based on the architecture manifest and latest user feedback.*
