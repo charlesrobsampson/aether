@@ -23,6 +23,7 @@ type Transmission struct {
 	Sender    string         `json:"sender"`
 	Satellite string         `json:"satellite"`
 	ThreadID  string         `json:"thread_id,omitempty"`
+	MessageID string         `json:"message_id,omitempty"`
 }
 
 // SessionAction accompanies a Response that changes conversation state.

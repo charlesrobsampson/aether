@@ -29,6 +29,7 @@ type transmission struct {
 	Sender    string         `json:"sender"`
 	Satellite string         `json:"satellite"`
 	ThreadID  string         `json:"thread_id,omitempty"`
+	MessageID string         `json:"message_id,omitempty"`
 }
 
 // Dispatch routes one accepted inbound message. Every outcome is written to
@@ -43,6 +44,7 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 	if cfg == nil {
 		r.record(ctx, store.RouteLog{
 			Direction: "inbound",
+			MessageID: in.MessageID,
 			Sender:    in.Sender,
 			Text:      in.Text,
 			Status:    "dropped",
@@ -56,6 +58,7 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 	if text == "" {
 		r.record(ctx, store.RouteLog{
 			Direction: "inbound",
+			MessageID: in.MessageID,
 			Sender:    in.Sender,
 			Text:      text,
 			Status:    "dropped",
@@ -80,6 +83,7 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 	if !ok {
 		r.record(ctx, store.RouteLog{
 			Direction: "inbound",
+			MessageID: in.MessageID,
 			Sender:    in.Sender,
 			Text:      text,
 			Status:    "dropped",
@@ -92,6 +96,7 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 	if err != nil {
 		r.record(ctx, store.RouteLog{
 			Direction: "inbound",
+			MessageID: in.MessageID,
 			Sender:    in.Sender,
 			Satellite: route.Satellite,
 			Text:      canonical,
@@ -109,6 +114,7 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 
 	r.record(ctx, store.RouteLog{
 		Direction: "inbound",
+		MessageID: in.MessageID,
 		Sender:    in.Sender,
 		Satellite: route.Satellite,
 		Text:      canonical,
@@ -142,6 +148,7 @@ func (r *Router) resolveBuiltin(text string) (Builtin, bool) {
 func (r *Router) dispatchBuiltin(ctx context.Context, in model.Inbound, builtin Builtin, text string) {
 	record := store.RouteLog{
 		Direction: "inbound",
+		MessageID: in.MessageID,
 		Sender:    in.Sender,
 		Satellite: builtin.Satellite,
 		Text:      text,
@@ -176,6 +183,7 @@ func (r *Router) dispatchRoute(ctx context.Context, in model.Inbound, route conf
 		if err != nil {
 			r.record(ctx, store.RouteLog{
 				Direction: "inbound",
+				MessageID: in.MessageID,
 				Sender:    in.Sender,
 				Satellite: route.Satellite,
 				Thread:    threadID,
@@ -194,10 +202,12 @@ func (r *Router) dispatchRoute(ctx context.Context, in model.Inbound, route conf
 			Sender:    in.Sender,
 			Satellite: route.Satellite,
 			ThreadID:  threadID,
+			MessageID: in.MessageID,
 		}
 		if err := r.post(ctx, route.Endpoint, command.Path, envelope); err != nil {
 			r.record(ctx, store.RouteLog{
 				Direction: "inbound",
+				MessageID: in.MessageID,
 				Sender:    in.Sender,
 				Satellite: route.Satellite,
 				Thread:    threadID,
@@ -210,6 +220,7 @@ func (r *Router) dispatchRoute(ctx context.Context, in model.Inbound, route conf
 
 		r.record(ctx, store.RouteLog{
 			Direction: "inbound",
+			MessageID: in.MessageID,
 			Sender:    in.Sender,
 			Satellite: route.Satellite,
 			Thread:    threadID,
@@ -229,6 +240,7 @@ func (r *Router) dispatchSession(ctx context.Context, cfg *config.Config, in mod
 	if strings.TrimSpace(reply) == "" {
 		r.record(ctx, store.RouteLog{
 			Direction: "inbound",
+			MessageID: in.MessageID,
 			Sender:    in.Sender,
 			Satellite: sess.Satellite,
 			Thread:    sess.ThreadID,
@@ -243,6 +255,7 @@ func (r *Router) dispatchSession(ctx context.Context, cfg *config.Config, in mod
 	if !ok {
 		r.record(ctx, store.RouteLog{
 			Direction: "inbound",
+			MessageID: in.MessageID,
 			Sender:    in.Sender,
 			Satellite: sess.Satellite,
 			Thread:    sess.ThreadID,
@@ -257,6 +270,7 @@ func (r *Router) dispatchSession(ctx context.Context, cfg *config.Config, in mod
 	if err != nil {
 		r.record(ctx, store.RouteLog{
 			Direction: "inbound",
+			MessageID: in.MessageID,
 			Sender:    in.Sender,
 			Satellite: route.Satellite,
 			Thread:    sess.ThreadID,
@@ -273,6 +287,7 @@ func (r *Router) dispatchSession(ctx context.Context, cfg *config.Config, in mod
 
 	r.record(ctx, store.RouteLog{
 		Direction: "inbound",
+		MessageID: in.MessageID,
 		Sender:    in.Sender,
 		Satellite: route.Satellite,
 		Thread:    sess.ThreadID,

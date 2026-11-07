@@ -114,7 +114,8 @@ func (s *Store) UpsertSatellite(ctx context.Context, rec SatelliteRecord) error 
 }
 
 // RouteLog is one inbound or outbound audit event (plan §3.8). Times are stored
-// as UTC RFC3339; a zero CreatedAt means "now".
+// as UTC RFC3339; a zero CreatedAt means "now". MessageID is the inbound
+// transport's upstream id, when it supplied one.
 type RouteLog struct {
 	Direction string
 	Sender    string
@@ -124,6 +125,7 @@ type RouteLog struct {
 	Text      string
 	Status    string
 	Error     string
+	MessageID string
 	CreatedAt time.Time
 }
 
@@ -147,13 +149,88 @@ func (s *Store) LogRoute(ctx context.Context, rec RouteLog) error {
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO route_log
-			(direction, sender, recipient, satellite, thread, text, status, error, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(direction, sender, recipient, satellite, thread, text, status, error, message_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.Direction, rec.Sender, rec.Recipient, rec.Satellite, rec.Thread,
-		rec.Text, rec.Status, rec.Error, createdAt.UTC().Format(time.RFC3339),
+		rec.Text, rec.Status, rec.Error, rec.MessageID,
+		createdAt.UTC().Format(time.RFC3339),
 	)
 	if err != nil {
 		return fmt.Errorf("store: log route: %w", err)
+	}
+	return nil
+}
+
+// DefaultDedupeTTL is the fallback inbound dedupe window when the caller does
+// not supply one (plan §3.2, §3.14).
+const DefaultDedupeTTL = 15 * time.Minute
+
+// ClaimInbound records an inbound (sender, message_id) pair and reports whether
+// it is fresh. It returns true when the message should be dispatched and false
+// when the same pair was seen within ttl. An empty messageID is always fresh
+// and writes nothing (best-effort dedupe). Expired rows are deleted
+// opportunistically, so a key can be reclaimed after the TTL.
+func (s *Store) ClaimInbound(ctx context.Context, sender, messageID string, ttl time.Duration) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, errors.New("store: closed")
+	}
+	if messageID == "" {
+		return true, nil
+	}
+	if ttl <= 0 {
+		ttl = DefaultDedupeTTL
+	}
+
+	now := time.Now().UTC()
+	cutoff := now.Add(-ttl).Format(time.RFC3339)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("store: claim inbound: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM inbound_dedupe WHERE seen_at < ?`, cutoff,
+	); err != nil {
+		return false, fmt.Errorf("store: claim inbound: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO inbound_dedupe (sender, message_id, seen_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(sender, message_id) DO NOTHING`,
+		sender, messageID, now.Format(time.RFC3339),
+	)
+	if err != nil {
+		return false, fmt.Errorf("store: claim inbound: %w", err)
+	}
+
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: claim inbound: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("store: claim inbound: %w", err)
+	}
+	return inserted == 1, nil
+}
+
+// ReleaseInbound removes a claim so a retry can be accepted after the message
+// was not actually queued (for example /receive returned 429). An empty
+// messageID is a no-op.
+func (s *Store) ReleaseInbound(ctx context.Context, sender, messageID string) error {
+	if s == nil || s.db == nil {
+		return errors.New("store: closed")
+	}
+	if messageID == "" {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM inbound_dedupe WHERE sender = ? AND message_id = ?`,
+		sender, messageID,
+	); err != nil {
+		return fmt.Errorf("store: release inbound: %w", err)
 	}
 	return nil
 }
@@ -232,8 +309,54 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("store: migrate: %w", err)
 		}
 	}
+	// SQLite has no ADD COLUMN IF NOT EXISTS, so older databases need the
+	// route_log.message_id column added explicitly. Fresh databases already
+	// have it from the CREATE TABLE above.
+	if err := addColumnIfMissing(tx, "route_log", "message_id",
+		`ALTER TABLE route_log ADD COLUMN message_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("store: migrate: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit migrations: %w", err)
+	}
+	return nil
+}
+
+// addColumnIfMissing inspects table's columns and runs alter only when the
+// column is absent. table, column, and the DDL are compile-time constants.
+func addColumnIfMissing(tx *sql.Tx, table, column, alter string) error {
+	rows, err := tx.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			columnTyp string
+			notNull   int
+			defaultV  any
+			primary   int
+		)
+		if err := rows.Scan(&cid, &name, &columnTyp, &notNull, &defaultV, &primary); err != nil {
+			return fmt.Errorf("inspect %s: %w", table, err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("inspect %s: %w", table, err)
+	}
+	// Release the read cursor before altering the table.
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("inspect %s: %w", table, err)
+	}
+	if _, err := tx.Exec(alter); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, column, err)
 	}
 	return nil
 }
@@ -254,9 +377,18 @@ var migrations = []string{
 		text       TEXT NOT NULL DEFAULT '',
 		status     TEXT NOT NULL,
 		error      TEXT NOT NULL DEFAULT '',
-		created_at TEXT NOT NULL
+		created_at TEXT NOT NULL,
+		message_id TEXT NOT NULL DEFAULT ''
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_route_log_created_at ON route_log (created_at)`,
+
+	`CREATE TABLE IF NOT EXISTS inbound_dedupe (
+		sender     TEXT NOT NULL,
+		message_id TEXT NOT NULL,
+		seen_at    TEXT NOT NULL,
+		PRIMARY KEY (sender, message_id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_inbound_dedupe_seen_at ON inbound_dedupe (seen_at)`,
 
 	`CREATE TABLE IF NOT EXISTS satellites (
 		name          TEXT PRIMARY KEY,

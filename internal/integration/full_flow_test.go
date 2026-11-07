@@ -539,3 +539,143 @@ func postJSON(t *testing.T, url, body string, headers map[string]string) (int, s
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<12))
 	return resp.StatusCode, string(raw)
 }
+
+// TestReceiveDeduplicatesByMessageID proves at-least-once transport retries do
+// not run a command twice: the same (sender, message_id) dispatches once, a new
+// id dispatches again, and an absent id remains best-effort and dispatches
+// every time.
+func TestReceiveDeduplicatesByMessageID(t *testing.T) {
+	const userPhone = "+15555550102"
+
+	root, dbPath := testRootWithDB(t)
+
+	recorder := newSatelliteRecorder()
+	satellite := httptest.NewServer(recorder)
+	defer satellite.Close()
+
+	testutil.WriteJSON(t, filepath.Join(root, "satellites", "dedupe.json"), config.SatelliteConfig{
+		Name:     "dedupe",
+		Trigger:  "dedupe",
+		Endpoint: satellite.URL,
+		Commands: []config.CommandConfig{
+			{
+				Name:     "dedupe",
+				Path:     "/dedupe",
+				Patterns: []string{"dedupe <word>"},
+				Args:     []config.ArgDef{{Name: "word", Type: "string"}},
+			},
+		},
+	})
+
+	clock := newStepClock(time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC))
+	watcher := newFakeWatcher()
+	defer watcher.close()
+
+	baseURL, stop := startApp(t, app.Options{
+		ConfigDir: root,
+		Clock:     clock,
+		Watcher:   watcher,
+	}, newRecordingMessenger())
+
+	stopped := false
+	defer func() {
+		if !stopped {
+			_ = stop()
+		}
+	}()
+
+	receive := func(body string) {
+		t.Helper()
+		if status, respBody := postJSON(t, baseURL+"/receive", body, nil); status != http.StatusAccepted {
+			t.Fatalf("/receive status = %d (%s), want 202", status, respBody)
+		}
+	}
+	payload := func(text, messageID string) string {
+		body := `{"sender":"` + userPhone + `","text":"` + text + `"`
+		if messageID != "" {
+			body += `,"message_id":"` + messageID + `"`
+		}
+		return body + `}`
+	}
+
+	// The same id twice dispatches once.
+	receive(payload("!dedupe first", "dup-1"))
+	first := recorder.wait(t)
+	if first.Transmission.MessageID != "dup-1" {
+		t.Fatalf("satellite message_id = %q, want dup-1", first.Transmission.MessageID)
+	}
+	receive(payload("!dedupe first", "dup-1"))
+
+	// A marker with another id is a FIFO barrier: a leaked duplicate would be
+	// ahead of it in the single dispatch worker and inflate the count.
+	receive(payload("!dedupe marker", "marker-1"))
+	recorder.wait(t)
+	if got := recorder.count(); got != 2 {
+		t.Fatalf("satellite calls after duplicate = %d, want 2", got)
+	}
+
+	// A different id is a different message.
+	receive(payload("!dedupe second", "dup-2"))
+	recorder.wait(t)
+	if got := recorder.count(); got != 3 {
+		t.Fatalf("satellite calls after a new id = %d, want 3", got)
+	}
+
+	// An absent id is explicitly best-effort: both messages dispatch.
+	receive(payload("!dedupe absent", ""))
+	recorder.wait(t)
+	receive(payload("!dedupe absent", ""))
+	recorder.wait(t)
+	if got := recorder.count(); got != 5 {
+		t.Fatalf("satellite calls with an absent id = %d, want 5", got)
+	}
+
+	// Stop first so the dispatch worker is drained before auditing SQLite.
+	if err := stop(); err != nil {
+		t.Fatalf("Run returned %v, want clean shutdown", err)
+	}
+	stopped = true
+
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store for audit: %v", err)
+	}
+	defer st.Close()
+
+	counts := map[string]int{}
+	rows, err := st.DB().Query(
+		`SELECT message_id, COUNT(*) FROM route_log WHERE direction = 'inbound' AND satellite = 'dedupe' GROUP BY message_id`)
+	if err != nil {
+		t.Fatalf("query route_log: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			messageID string
+			count     int
+		)
+		if err := rows.Scan(&messageID, &count); err != nil {
+			t.Fatalf("scan route_log: %v", err)
+		}
+		counts[messageID] = count
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate route_log: %v", err)
+	}
+
+	if got := counts["dup-1"]; got != 1 {
+		t.Errorf("route_log rows for dup-1 = %d, want 1", got)
+	}
+	if got := counts["dup-2"]; got != 1 {
+		t.Errorf("route_log rows for dup-2 = %d, want 1", got)
+	}
+	if got := counts["marker-1"]; got != 1 {
+		t.Errorf("route_log rows for marker-1 = %d, want 1", got)
+	}
+	if got := counts[""]; got != 2 {
+		t.Errorf("route_log rows with an absent id = %d, want 2", got)
+	}
+	if got := len(counts); got != 4 {
+		t.Errorf("distinct message_id values = %d (%v), want 4", got, counts)
+	}
+}

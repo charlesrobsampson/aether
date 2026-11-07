@@ -46,6 +46,9 @@ type LimitsConfig struct {
 	// SendTimeoutSeconds bounds one outbound send attempt. Zero means the
 	// queue default (10s).
 	SendTimeoutSeconds int `json:"send_timeout_seconds"`
+	// DedupeTTLSeconds bounds how long an inbound (sender, message_id) is
+	// remembered. Zero means the store default (900s).
+	DedupeTTLSeconds int `json:"dedupe_ttl_seconds"`
 }
 
 type ProviderConfig struct {

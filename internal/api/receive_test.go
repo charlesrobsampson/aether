@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -261,4 +262,139 @@ func TestReceiveQueueFull(t *testing.T) {
 			t.Fatalf("Retry-After = %q, want it unset for a non-retryable failure", got)
 		}
 	})
+}
+
+// TestReceiveDedupeHitReturnsAccepted proves a duplicate claim is acknowledged
+// without enqueuing the message again.
+func TestReceiveDedupeHitReturnsAccepted(t *testing.T) {
+	const approved = "+15555550102"
+
+	cfg := func() *config.Config {
+		return &config.Config{
+			Admin: config.AdminConfig{ApprovedNumbers: []string{approved}},
+		}
+	}
+
+	var (
+		claimed bool
+		handled int
+	)
+	handler := NewReceiveHandler(ReceiveOptions{
+		Config: cfg,
+		Claim: func(_ context.Context, sender, messageID string) (bool, error) {
+			claimed = true
+			if sender != approved || messageID != "dup-1" {
+				t.Errorf("Claim(%q, %q), want (%q, dup-1)", sender, messageID, approved)
+			}
+			return false, nil
+		},
+		Handle: func(_ context.Context, _ model.Inbound) error {
+			handled++
+			return nil
+		},
+	})
+
+	body := `{"sender":"` + approved + `","text":"!test","message_id":"dup-1"}`
+	req := httptest.NewRequest(http.MethodPost, "/receive", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (body %q)", rec.Code, rec.Body.String())
+	}
+	if !claimed {
+		t.Fatal("Claim was not called")
+	}
+	if handled != 0 {
+		t.Fatalf("submit calls = %d, want 0 for a duplicate", handled)
+	}
+}
+
+// TestReceiveDedupeErrorFailsOpen proves a dedupe failure never drops a
+// message: the error is logged and the message is submitted anyway.
+func TestReceiveDedupeErrorFailsOpen(t *testing.T) {
+	const approved = "+15555550102"
+
+	cfg := func() *config.Config {
+		return &config.Config{
+			Admin: config.AdminConfig{ApprovedNumbers: []string{approved}},
+		}
+	}
+
+	var (
+		handled int
+		logged  []string
+	)
+	handler := NewReceiveHandler(ReceiveOptions{
+		Config: cfg,
+		Claim: func(_ context.Context, _, _ string) (bool, error) {
+			return false, errors.New("store unavailable")
+		},
+		Logf: func(format string, args ...any) {
+			logged = append(logged, fmt.Sprintf(format, args...))
+		},
+		Handle: func(_ context.Context, _ model.Inbound) error {
+			handled++
+			return nil
+		},
+	})
+
+	body := `{"sender":"` + approved + `","text":"!test","message_id":"dup-2"}`
+	req := httptest.NewRequest(http.MethodPost, "/receive", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (body %q)", rec.Code, rec.Body.String())
+	}
+	if handled != 1 {
+		t.Fatalf("submit calls = %d, want 1 when the claim fails open", handled)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "dedupe") {
+		t.Fatalf("log lines = %v, want one dedupe failure line", logged)
+	}
+}
+
+// TestReceiveDedupeReleasedOnSubmitFailure proves a claim is released when the
+// dispatch queue rejects the message, so the transport's 429 retry is not
+// mistaken for a duplicate and silently dropped.
+func TestReceiveDedupeReleasedOnSubmitFailure(t *testing.T) {
+	const approved = "+15555550102"
+
+	cfg := func() *config.Config {
+		return &config.Config{
+			Admin: config.AdminConfig{ApprovedNumbers: []string{approved}},
+		}
+	}
+
+	var released bool
+	handler := NewReceiveHandler(ReceiveOptions{
+		Config: cfg,
+		Claim: func(_ context.Context, _, _ string) (bool, error) {
+			return true, nil
+		},
+		Release: func(_ context.Context, sender, messageID string) error {
+			released = true
+			if sender != approved || messageID != "retry-1" {
+				t.Errorf("Release(%q, %q), want (%q, retry-1)", sender, messageID, approved)
+			}
+			return nil
+		},
+		Handle: func(_ context.Context, _ model.Inbound) error {
+			return ErrQueueFull
+		},
+		Logf: func(string, ...any) {},
+	})
+
+	body := `{"sender":"` + approved + `","text":"!test","message_id":"retry-1"}`
+	req := httptest.NewRequest(http.MethodPost, "/receive", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 (body %q)", rec.Code, rec.Body.String())
+	}
+	if !released {
+		t.Fatal("claim was not released after the queue rejected the message")
+	}
 }

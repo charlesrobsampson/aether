@@ -24,7 +24,7 @@ func TestLoadConfig(t *testing.T) {
 		"server": {"port": 9090, "db_path": "/tmp/aether-test.db"},
 		"persona": {"name": "Aether", "prefixes": ["!", "/"]},
 		"auth": {"jwt_secret": "test-secret", "ingress_token": "ingress"},
-		"limits": {"rate_per_second": 2, "burst": 3, "queue_depth": 16, "dispatch_queue_depth": 17, "send_timeout_seconds": 7},
+		"limits": {"rate_per_second": 2, "burst": 3, "queue_depth": 16, "dispatch_queue_depth": 17, "send_timeout_seconds": 7, "dedupe_ttl_seconds": 90},
 		"default_provider": "signal",
 		"providers": {"signal": {"type": "msg", "account": "+15555550100"}},
 		"schedules": [
@@ -111,6 +111,9 @@ func TestLoadConfig(t *testing.T) {
 				}
 				if got := cfg.System.Limits.SendTimeoutSeconds; got != 7 {
 					t.Errorf("System.Limits.SendTimeoutSeconds = %d, want 7", got)
+				}
+				if got := cfg.System.Limits.DedupeTTLSeconds; got != 90 {
+					t.Errorf("System.Limits.DedupeTTLSeconds = %d, want 90", got)
 				}
 				if got := cfg.System.Limits.DispatchQueueDepth; got != 17 {
 					t.Errorf("System.Limits.DispatchQueueDepth = %d, want 17", got)

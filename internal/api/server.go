@@ -35,6 +35,10 @@ type ServerOptions struct {
 	Metrics *metrics.Registry
 	// Inbound receives accepted /receive messages.
 	Inbound InboundHandler
+	// Claim deduplicates accepted /receive messages by (sender, message_id).
+	Claim InboundClaim
+	// Release undoes a claim when Inbound rejects the message.
+	Release InboundRelease
 	// OnUnknown is called once for a sender who is neither approved nor
 	// denied.
 	OnUnknown func(phone string)
@@ -64,6 +68,8 @@ func NewServer(options ServerOptions) http.Handler {
 	mux.Handle("POST /receive", NewReceiveHandler(ReceiveOptions{
 		Config:    options.Config,
 		Handle:    options.Inbound,
+		Claim:     options.Claim,
+		Release:   options.Release,
 		OnUnknown: options.OnUnknown,
 	}))
 	mux.Handle("POST /message", NewMessageHandler(MessageOptions{

@@ -27,6 +27,7 @@ type dispatchEnvelope struct {
 	Sender    string                     `json:"sender"`
 	Satellite string                     `json:"satellite"`
 	ThreadID  string                     `json:"thread_id"`
+	MessageID string                     `json:"message_id"`
 }
 
 type dispatchCall struct {
@@ -375,5 +376,87 @@ func assertJSONEqual(t *testing.T, got map[string]json.RawMessage, want map[stri
 	}
 	if string(gotJSON) != string(wantJSON) {
 		t.Errorf("args = %s, want %s", gotJSON, wantJSON)
+	}
+}
+
+// TestEnvelopeAndRouteLogCarryMessageID proves the inbound correlation id is
+// forwarded to the satellite and audited in route_log (plan §3.6).
+func TestEnvelopeAndRouteLogCarryMessageID(t *testing.T) {
+	const (
+		sender    = "+15555550102"
+		messageID = "upstream-42"
+	)
+
+	var (
+		mu       sync.Mutex
+		envelope dispatchEnvelope
+		calls    int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got dispatchEnvelope
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("satellite received invalid JSON: %v", err)
+		}
+		mu.Lock()
+		envelope = got
+		calls++
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	root := testutil.TempConfig(t)
+	cfg, err := config.LoadConfig(root)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	testutil.WriteJSON(t, filepath.Join(root, "routes.json"), routesForTest(cfg, server.URL))
+	cfg, err = config.LoadConfig(root)
+	if err != nil {
+		t.Fatalf("LoadConfig after routes: %v", err)
+	}
+
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("store.Close: %v", err)
+		}
+	})
+
+	rt := New(Options{
+		Config: func() *config.Config { return cfg },
+		Store:  st,
+		Client: server.Client(),
+	})
+	rt.Dispatch(context.Background(), model.Inbound{
+		Sender:    sender,
+		Text:      "!fly FPS",
+		Provider:  "signal",
+		MessageID: messageID,
+	})
+
+	mu.Lock()
+	gotEnvelope := envelope
+	gotCalls := calls
+	mu.Unlock()
+
+	if gotCalls != 1 {
+		t.Fatalf("satellite calls = %d, want 1", gotCalls)
+	}
+	if gotEnvelope.MessageID != messageID {
+		t.Fatalf("envelope message_id = %q, want %q", gotEnvelope.MessageID, messageID)
+	}
+
+	var loggedID string
+	if err := st.DB().QueryRow(
+		`SELECT message_id FROM route_log ORDER BY id DESC LIMIT 1`,
+	).Scan(&loggedID); err != nil {
+		t.Fatalf("read route_log.message_id: %v", err)
+	}
+	if loggedID != messageID {
+		t.Fatalf("route_log.message_id = %q, want %q", loggedID, messageID)
 	}
 }

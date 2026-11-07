@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -32,6 +33,16 @@ var ErrQueueFull = errors.New("api: inbound dispatch queue is full")
 // becomes 429 with Retry-After.
 type InboundHandler func(context.Context, model.Inbound) error
 
+// InboundClaim reports whether an inbound (sender, message_id) pair is fresh.
+// False means a duplicate within the dedupe TTL. An empty messageID is always
+// fresh.
+type InboundClaim func(ctx context.Context, sender, messageID string) (bool, error)
+
+// InboundRelease removes a claim after a message could not be queued, so the
+// transport's retry is not mistaken for a duplicate. Implementations must
+// ignore an empty messageID.
+type InboundRelease func(ctx context.Context, sender, messageID string) error
+
 // ReceiveOptions configures the /receive handler.
 type ReceiveOptions struct {
 	// Config returns the active configuration. A getter rather than a value
@@ -40,6 +51,15 @@ type ReceiveOptions struct {
 	// Handle enqueues an accepted message. A nil handler acknowledges and
 	// drops the message.
 	Handle InboundHandler
+	// Claim deduplicates an accepted message by (sender, message_id). A nil
+	// claim disables dedupe. Errors fail open: the message is still queued.
+	Claim InboundClaim
+	// Release undoes a successful Claim when Handle rejects the message. It
+	// is optional; without it a retried message could be mistaken for a
+	// duplicate after a 429.
+	Release InboundRelease
+	// Logf records operational failures. Nil uses the standard logger.
+	Logf func(format string, args ...any)
 	// OnUnknown is called once for a sender who is neither approved nor
 	// denied. Deduplication against pending approvals belongs to the
 	// admin-manager.
@@ -92,8 +112,35 @@ func (h *receiveHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusAccepted)
 	default:
+		claimed := false
+		if h.options.Claim != nil {
+			fresh, err := h.options.Claim(r.Context(), inbound.Sender, inbound.MessageID)
+			switch {
+			case err != nil:
+				// Dedupe is best-effort: a store problem must never drop a
+				// message the transport already delivered.
+				h.logf("receive: dedupe claim for %q message %q: %v",
+					inbound.Sender, inbound.MessageID, err)
+			case !fresh:
+				// A duplicate within the TTL is acknowledged without
+				// dispatching it again.
+				w.WriteHeader(http.StatusAccepted)
+				return
+			default:
+				claimed = true
+			}
+		}
+
 		if h.options.Handle != nil {
 			if err := h.options.Handle(r.Context(), inbound); err != nil {
+				// The message was not queued, so release the claim: a 429
+				// retry must be allowed to dispatch it.
+				if claimed && h.options.Release != nil {
+					if releaseErr := h.options.Release(r.Context(), inbound.Sender, inbound.MessageID); releaseErr != nil {
+						h.logf("receive: release claim for %q message %q: %v",
+							inbound.Sender, inbound.MessageID, releaseErr)
+					}
+				}
 				if errors.Is(err, ErrQueueFull) {
 					w.Header().Set("Retry-After", "1")
 					http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
@@ -105,6 +152,14 @@ func (h *receiveHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusAccepted)
 	}
+}
+
+func (h *receiveHandler) logf(format string, args ...any) {
+	if h.options.Logf != nil {
+		h.options.Logf(format, args...)
+		return
+	}
+	log.Printf(format, args...)
 }
 
 func (h *receiveHandler) config() *config.Config {

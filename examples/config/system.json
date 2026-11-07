@@ -13,7 +13,9 @@
   "limits": {
     "rate_per_second": 1,
     "burst": 5,
-    "queue_depth": 256
+    "queue_depth": 256,
+    "dispatch_queue_depth": 256,
+    "dedupe_ttl_seconds": 900
   },
   "default_provider": "signal",
   "providers": {

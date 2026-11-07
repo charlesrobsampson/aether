@@ -128,6 +128,10 @@ func Run(ctx context.Context, opts Options) error {
 	sched := scheduler.New(clock)
 
 	limits := initial.System.Limits
+	dedupeTTL := time.Duration(limits.DedupeTTLSeconds) * time.Second
+	if dedupeTTL <= 0 {
+		dedupeTTL = store.DefaultDedupeTTL
+	}
 	q, err := queue.New(queue.Options{
 		Depth:         limits.QueueDepth,
 		RatePerSecond: limits.RatePerSecond,
@@ -280,6 +284,12 @@ func Run(ctx context.Context, opts Options) error {
 			}
 			metrics.IncInboundMessages()
 			return nil
+		},
+		Claim: func(ctx context.Context, sender, messageID string) (bool, error) {
+			return st.ClaimInbound(ctx, sender, messageID, dedupeTTL)
+		},
+		Release: func(ctx context.Context, sender, messageID string) error {
+			return st.ReleaseInbound(ctx, sender, messageID)
 		},
 		OnUnknown: func(phone string) {
 			// The admin-manager deduplicates against pending approvals, so a

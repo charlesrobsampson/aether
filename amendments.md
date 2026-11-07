@@ -131,7 +131,7 @@ go test ./... && gofmt -l . && go vet ./... && go build ./...
 
 ---
 
-### [ ] A04 — Inbound idempotency by `(sender, message_id)`
+### [x] A04 — Inbound idempotency by `(sender, message_id)`
 **Depends on:** A03
 **Amends:** `plan.md` §3.2 (dedupe), §3.6 (`message_id` in the envelope), §3.8 (`message_id` column and `inbound_dedupe`), §3.19 (delivery semantics), §6.
 **Why:** at-least-once retries must not run a user command twice.
@@ -153,8 +153,9 @@ go test -v ./internal/integration -run '^TestReceiveDeduplicatesByMessageID$'
 go test ./... && gofmt -l . && go vet ./... && go build ./...
 ```
 **Done when:** a duplicate within the TTL is suppressed and survives a store restart because the key is in SQLite; `message_id` appears in the envelope and `route_log`; an absent `message_id` is explicitly best-effort; migrations keep an existing database working; the full gate is clean.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e59baf2a3ffeeLyyjRcU27NbvS` (A04 inbound idempotency)
+**Resume:** `git switch amendment/a04-inbound-idempotency && opencode run -s ses_e59baf2a3ffeeLyyjRcU27NbvS "Resume A04 (inbound idempotency). Read plan.md, process.md, and amendments.md, then continue."`
+**Completed:** `2026-11-06` · `amendment/a04-inbound-idempotency`
 
 ---
 
