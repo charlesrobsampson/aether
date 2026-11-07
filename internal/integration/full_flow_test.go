@@ -20,6 +20,7 @@ import (
 	"github.com/charlesrobsampson/aether/internal/auth"
 	"github.com/charlesrobsampson/aether/internal/config"
 	"github.com/charlesrobsampson/aether/internal/metrics"
+	"github.com/charlesrobsampson/aether/internal/model"
 	"github.com/charlesrobsampson/aether/internal/store"
 	"github.com/charlesrobsampson/aether/internal/testutil"
 	"github.com/charlesrobsampson/aether/internal/transport"
@@ -677,5 +678,262 @@ func TestReceiveDeduplicatesByMessageID(t *testing.T) {
 	}
 	if got := len(counts); got != 4 {
 		t.Errorf("distinct message_id values = %d (%v), want 4", got, counts)
+	}
+}
+
+// gatedMessenger blocks its first send so a test can fill the outbound queue
+// behind one in-flight job without sleeping.
+type gatedMessenger struct {
+	mu      sync.Mutex
+	calls   []transport.Call
+	started chan struct{}
+	release chan struct{}
+}
+
+func newGatedMessenger() *gatedMessenger {
+	return &gatedMessenger{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+}
+
+func (m *gatedMessenger) Send(ctx context.Context, recipient, text string) error {
+	m.mu.Lock()
+	m.calls = append(m.calls, transport.Call{Recipient: recipient, Text: text})
+	first := len(m.calls) == 1
+	m.mu.Unlock()
+
+	if first {
+		select {
+		case m.started <- struct{}{}:
+		default:
+		}
+		select {
+		case <-m.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func (m *gatedMessenger) Name() string { return "gated" }
+
+func (m *gatedMessenger) snapshot() []transport.Call {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]transport.Call, len(m.calls))
+	copy(out, m.calls)
+	return out
+}
+
+// TestMessageBatchAtomicOnFullQueue proves /message is all-or-nothing under
+// saturation: with one job in flight and one buffered, a two-recipient batch is
+// rejected with 429 + Retry-After and neither recipient is enqueued (plan §3.3,
+// §3.9).
+func TestMessageBatchAtomicOnFullQueue(t *testing.T) {
+	const adminPhone = "+15555550101"
+
+	root, _ := testRootWithDB(t)
+	cfg, err := config.LoadConfig(root)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.System.Limits.QueueDepth = 1
+	cfg.System.Limits.RatePerSecond = 1000
+	cfg.System.Limits.Burst = 100
+	testutil.WriteJSON(t, filepath.Join(root, "system.json"), cfg.System)
+
+	watcher := newFakeWatcher()
+	defer watcher.close()
+
+	messenger := newGatedMessenger()
+	baseURL, stop := startApp(t, app.Options{
+		ConfigDir: root,
+		Clock:     testutil.NewFakeClock(time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)),
+		Watcher:   watcher,
+	}, messenger)
+
+	stopped := false
+	defer func() {
+		if !stopped {
+			_ = stop()
+		}
+	}()
+
+	token, err := auth.Issue(cfg.System.Auth.JWTSecret, adminPhone, auth.Admin, time.Hour)
+	if err != nil {
+		t.Fatalf("issue JWT: %v", err)
+	}
+	authHeader := map[string]string{"Authorization": "Bearer " + token}
+
+	send := func(recipients ...string) *http.Response {
+		t.Helper()
+		body, err := json.Marshal(model.Outbound{Recipients: recipients, Text: "batch"})
+		if err != nil {
+			t.Fatalf("marshal outbound: %v", err)
+		}
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/message", strings.NewReader(string(body)))
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		for key, value := range authHeader {
+			req.Header.Set(key, value)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /message: %v", err)
+		}
+		return resp
+	}
+	closeBody := func(resp *http.Response) {
+		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+			t.Errorf("drain response: %v", err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response: %v", err)
+		}
+	}
+
+	// One job is in flight and blocked in the messenger.
+	if resp := send("+15555550201"); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("first status = %d, want 202", resp.StatusCode)
+	} else {
+		closeBody(resp)
+	}
+	select {
+	case <-messenger.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("outbound worker never reached the gated messenger")
+	}
+
+	// The depth-1 buffer holds one more job.
+	if resp := send("+15555550202"); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("second status = %d, want 202", resp.StatusCode)
+	} else {
+		closeBody(resp)
+	}
+
+	// A two-recipient batch cannot fit and must not partially enqueue.
+	batch := send("+15555550203", "+15555550204")
+	defer closeBody(batch)
+	if batch.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("batch status = %d, want 429", batch.StatusCode)
+	}
+	if got := batch.Header.Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After = %q, want 1", got)
+	}
+
+	close(messenger.release)
+	if err := stop(); err != nil {
+		t.Fatalf("Run returned %v, want clean shutdown", err)
+	}
+	stopped = true
+
+	calls := messenger.snapshot()
+	if len(calls) != 2 {
+		t.Fatalf("delivered calls = %d, want only the 2 accepted jobs: %+v", len(calls), calls)
+	}
+	want := map[string]bool{"+15555550201": true, "+15555550202": true}
+	for _, call := range calls {
+		if !want[call.Recipient] {
+			t.Fatalf("unexpected delivery to %q: a rejected batch was partially enqueued", call.Recipient)
+		}
+	}
+}
+
+// failingMessenger returns the same error for every send.
+type failingMessenger struct{ err error }
+
+func (m *failingMessenger) Send(context.Context, string, string) error { return m.err }
+func (m *failingMessenger) Name() string                               { return "failing" }
+
+// TestDeadLetterPersistsRouteLog proves app wiring turns an exhausted terminal
+// failure into exactly one outbound dead-letter audit row (plan §3.9, §3.19).
+func TestDeadLetterPersistsRouteLog(t *testing.T) {
+	const (
+		adminPhone = "+15555550101"
+		recipient  = "+15555550201"
+	)
+
+	root, dbPath := testRootWithDB(t)
+	cfg, err := config.LoadConfig(root)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	token, err := auth.Issue(cfg.System.Auth.JWTSecret, adminPhone, auth.Admin, time.Hour)
+	if err != nil {
+		t.Fatalf("issue JWT: %v", err)
+	}
+
+	watcher := newFakeWatcher()
+	defer watcher.close()
+
+	baseURL, stop := startApp(t, app.Options{
+		ConfigDir: root,
+		Clock:     testutil.NewFakeClock(time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)),
+		Watcher:   watcher,
+	}, &failingMessenger{err: &transport.SendError{StatusCode: 400}})
+
+	body, err := json.Marshal(model.Outbound{Recipients: []string{recipient}, Text: "doomed"})
+	if err != nil {
+		t.Fatalf("marshal outbound: %v", err)
+	}
+	status, respBody := postJSON(t, baseURL+"/message", string(body), map[string]string{
+		"Authorization": "Bearer " + token,
+	})
+	if status != http.StatusAccepted {
+		t.Fatalf("/message status = %d (%s), want 202", status, respBody)
+	}
+
+	// A clean shutdown drains the queue, so the terminal failure is
+	// dead-lettered before Run returns.
+	if err := stop(); err != nil {
+		t.Fatalf("Run returned %v, want clean shutdown", err)
+	}
+
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store for audit: %v", err)
+	}
+	defer st.Close()
+
+	rows, err := st.DB().Query(
+		`SELECT direction, recipient, status, error FROM route_log WHERE status = 'dead_letter'`)
+	if err != nil {
+		t.Fatalf("query route_log: %v", err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		direction string
+		recipient string
+		status    string
+		errText   string
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.direction, &r.recipient, &r.status, &r.errText); err != nil {
+			t.Fatalf("scan route_log: %v", err)
+		}
+		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate route_log: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("dead-letter rows = %d, want 1: %+v", len(got), got)
+	}
+	if got[0].direction != "outbound" {
+		t.Errorf("direction = %q, want outbound", got[0].direction)
+	}
+	if got[0].recipient != recipient {
+		t.Errorf("recipient = %q, want %q", got[0].recipient, recipient)
+	}
+	if !strings.Contains(got[0].errText, "400") {
+		t.Errorf("error = %q, want the terminal status", got[0].errText)
 	}
 }

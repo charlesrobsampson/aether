@@ -18,10 +18,12 @@ import (
 // larger body is either malformed or hostile.
 const maxMessageBody = 1 << 20
 
-// Enqueuer accepts one outbound job. *queue.Queue implements it; tests inject
-// a recorder instead of starting workers.
+// Enqueuer accepts outbound jobs. *queue.Queue implements it; tests inject a
+// recorder instead of starting workers. EnqueueBatch is all-or-nothing, so a
+// saturated queue can be reported without a partial fan-out.
 type Enqueuer interface {
 	Enqueue(queue.Job) error
+	EnqueueBatch(jobs []queue.Job) error
 }
 
 // SessionApplier applies a session lifecycle action. *router.Router implements
@@ -118,32 +120,33 @@ func (h *messageHandler) handle(w http.ResponseWriter, r *http.Request, cfg *con
 			w.WriteHeader(http.StatusAccepted)
 			return
 		}
-		job := queue.Job{
+		jobs := []queue.Job{{
 			Recipient: outbound.GroupChatID,
 			Text:      outbound.Text,
 			Provider:  provider,
-		}
-		if err := h.options.Queue.Enqueue(job); err != nil {
-			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+		}}
+		if !h.enqueueBatch(w, jobs) {
 			return
 		}
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 
+	// Build the whole fan-out before enqueuing so a full queue can be answered
+	// with 429 without leaving a partial batch behind (plan §3.3).
+	jobs := make([]queue.Job, 0, len(outbound.Recipients))
 	for _, recipient := range outbound.Recipients {
 		if auth.IsDenied(cfg, recipient) {
 			continue
 		}
-		job := queue.Job{
+		jobs = append(jobs, queue.Job{
 			Recipient: recipient,
 			Text:      outbound.Text,
 			Provider:  provider,
-		}
-		if err := h.options.Queue.Enqueue(job); err != nil {
-			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
-			return
-		}
+		})
+	}
+	if !h.enqueueBatch(w, jobs) {
+		return
 	}
 
 	// One increment per request, regardless of how many recipients survived
@@ -153,6 +156,21 @@ func (h *messageHandler) handle(w http.ResponseWriter, r *http.Request, cfg *con
 	}
 
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// enqueueBatch hands the whole fan-out to the queue once and maps saturation to
+// 429 + Retry-After. It returns false when a response has already been written.
+func (h *messageHandler) enqueueBatch(w http.ResponseWriter, jobs []queue.Job) bool {
+	if err := h.options.Queue.EnqueueBatch(jobs); err != nil {
+		if errors.Is(err, queue.ErrFull) {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
+			return false
+		}
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return false
+	}
+	return true
 }
 
 // groupApproved reports whether groupID appears verbatim in admin.json's

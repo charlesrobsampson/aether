@@ -7,7 +7,10 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -49,6 +52,42 @@ func (e *SendError) Unwrap() error {
 		return nil
 	}
 	return e.Err
+}
+
+// Retryable classifies an outbound failure. It reports whether another attempt
+// is worthwhile and, when the provider supplied one, the minimum delay from
+// Retry-After.
+//
+// Only network/context errors and provider 429/5xx statuses are retryable.
+// Every other positive provider status (400, 401, 403, 404, 409, ...) is
+// terminal, and an unrecognised error is treated as terminal too.
+func Retryable(err error) (bool, time.Duration) {
+	if err == nil {
+		return false, 0
+	}
+
+	var sendErr *SendError
+	if errors.As(err, &sendErr) && sendErr.StatusCode > 0 {
+		switch {
+		case sendErr.StatusCode == http.StatusTooManyRequests:
+			return true, sendErr.RetryAfter
+		case sendErr.StatusCode >= 500 && sendErr.StatusCode <= 599:
+			return true, sendErr.RetryAfter
+		default:
+			return false, 0
+		}
+	}
+
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true, 0
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true, 0
+	}
+
+	return false, 0
 }
 
 // Call is one recorded Send invocation on a Fake.

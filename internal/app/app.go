@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -137,6 +138,8 @@ func Run(ctx context.Context, opts Options) error {
 		RatePerSecond: limits.RatePerSecond,
 		Burst:         limits.Burst,
 		SendTimeout:   time.Duration(limits.SendTimeoutSeconds) * time.Second,
+		Attempts:      limits.SendAttempts,
+		RetryBackoff:  time.Duration(limits.RetryBackoffMS) * time.Millisecond,
 		Messenger:     messenger,
 		Clock:         clock,
 		Muted: func(recipient string) bool {
@@ -145,6 +148,26 @@ func Run(ctx context.Context, opts Options) error {
 				return false
 			}
 			return cfg.Users[recipient].Muted
+		},
+		OnError: func(job queue.Job, err error) {
+			log.Printf("queue: send to %s via %s failed: %v", job.Recipient, job.Provider, err)
+		},
+		OnDeadLetter: func(job queue.Job, err error) {
+			// The queue stopped retrying; persist one audit row so the loss is
+			// visible (plan §3.9, §3.19).
+			log.Printf("queue: dead-letter %s via %s: %v", job.Recipient, job.Provider, err)
+			record := store.RouteLog{
+				Direction: "outbound",
+				Recipient: job.Recipient,
+				Text:      job.Text,
+				Status:    "dead_letter",
+			}
+			if err != nil {
+				record.Error = err.Error()
+			}
+			if logErr := st.LogRoute(context.Background(), record); logErr != nil {
+				log.Printf("queue: record dead letter: %v", logErr)
+			}
 		},
 	})
 	if err != nil {

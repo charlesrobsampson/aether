@@ -15,13 +15,23 @@ import (
 	"github.com/charlesrobsampson/aether/internal/queue"
 )
 
-// fakeQueue records the jobs the /message handler accepts.
+// fakeQueue records the jobs the /message handler accepts. err, when set, is
+// returned by EnqueueBatch so tests can exercise saturation handling.
 type fakeQueue struct {
 	jobs []queue.Job
+	err  error
 }
 
 func (q *fakeQueue) Enqueue(job queue.Job) error {
 	q.jobs = append(q.jobs, job)
+	return nil
+}
+
+func (q *fakeQueue) EnqueueBatch(jobs []queue.Job) error {
+	if q.err != nil {
+		return q.err
+	}
+	q.jobs = append(q.jobs, jobs...)
 	return nil
 }
 
@@ -380,5 +390,58 @@ func TestMessageGroup(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestMessageQueueFullReturns429 proves a saturated outbound queue pushes back:
+// the handler returns 429 with Retry-After and does not enqueue a partial batch
+// (plan §3.3).
+func TestMessageQueueFullReturns429(t *testing.T) {
+	const (
+		secret   = "full-test-secret"
+		sender   = "+15555550100"
+		provider = "signal"
+	)
+
+	cfg := &config.Config{
+		System: config.SystemConfig{
+			Auth:            config.AuthConfig{JWTSecret: secret},
+			DefaultProvider: provider,
+		},
+		Admin: config.AdminConfig{ApprovedNumbers: []string{sender}},
+	}
+
+	token, err := auth.Issue(secret, sender, auth.Admin, time.Hour)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	jobs := &fakeQueue{err: queue.ErrFull}
+	handler := NewMessageHandler(MessageOptions{
+		Config: func() *config.Config { return cfg },
+		Queue:  jobs,
+	})
+
+	body, err := json.Marshal(model.Outbound{
+		Recipients: []string{"+15555550201", "+15555550202"},
+		Text:       "saturated",
+	})
+	if err != nil {
+		t.Fatalf("marshal outbound: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/message", strings.NewReader(string(body)))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 (body %q)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After = %q, want 1", got)
+	}
+	if len(jobs.jobs) != 0 {
+		t.Fatalf("jobs = %d, want 0 when the batch is rejected: %+v", len(jobs.jobs), jobs.jobs)
 	}
 }

@@ -24,7 +24,7 @@ func TestLoadConfig(t *testing.T) {
 		"server": {"port": 9090, "db_path": "/tmp/aether-test.db"},
 		"persona": {"name": "Aether", "prefixes": ["!", "/"]},
 		"auth": {"jwt_secret": "test-secret", "ingress_token": "ingress"},
-		"limits": {"rate_per_second": 2, "burst": 3, "queue_depth": 16, "dispatch_queue_depth": 17, "send_timeout_seconds": 7, "dedupe_ttl_seconds": 90},
+		"limits": {"rate_per_second": 2, "burst": 3, "queue_depth": 16, "dispatch_queue_depth": 17, "send_timeout_seconds": 7, "dedupe_ttl_seconds": 90, "send_attempts": 4, "retry_backoff_ms": 750},
 		"default_provider": "signal",
 		"providers": {"signal": {"type": "msg", "account": "+15555550100"}},
 		"schedules": [
@@ -117,6 +117,12 @@ func TestLoadConfig(t *testing.T) {
 				}
 				if got := cfg.System.Limits.DispatchQueueDepth; got != 17 {
 					t.Errorf("System.Limits.DispatchQueueDepth = %d, want 17", got)
+				}
+				if got := cfg.System.Limits.SendAttempts; got != 4 {
+					t.Errorf("System.Limits.SendAttempts = %d, want 4", got)
+				}
+				if got := cfg.System.Limits.RetryBackoffMS; got != 750 {
+					t.Errorf("System.Limits.RetryBackoffMS = %d, want 750", got)
 				}
 				if got := len(cfg.System.Schedules); got != 1 {
 					t.Fatalf("len(System.Schedules) = %d, want 1", got)

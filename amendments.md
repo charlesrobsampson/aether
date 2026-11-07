@@ -159,7 +159,7 @@ go test ./... && gofmt -l . && go vet ./... && go build ./...
 
 ---
 
-### [ ] A05 — Outbound retries, dead-letter, and queue-full `429`
+### [x] A05 — Outbound retries, dead-letter, and queue-full `429`
 **Depends on:** A04
 **Amends:** `plan.md` §3.3 (all-or-nothing enqueue and `429`), §3.9 (retries, dead-letter, fail-fast enqueue), §3.19 (outbound delivery), §6 (outbound delivery).
 **Why:** a `202` must not silently lose a message, and saturation must push back instead of blocking a handler.
@@ -183,8 +183,9 @@ go test -v ./internal/integration -run '^TestMessageBatchAtomicOnFullQueue$'
 go test ./... && gofmt -l . && go vet ./... && go build ./...
 ```
 **Done when:** a full outbound queue returns `429` with `Retry-After` and enqueues no partial batch; only network errors, `429`, and `5xx` retry; `Retry-After` is honoured; exhausted jobs produce one dead-letter `route_log` row and stop; the full gate is clean.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e59baf2a3ffeeLyyjRcU27NbvS` (A05 outbound reliability)
+**Resume:** `git switch amendment/a05-outbound-reliability && opencode run -s ses_e59baf2a3ffeeLyyjRcU27NbvS "Resume A05 (outbound retries and dead-letter). Read plan.md, process.md, and amendments.md, then continue."`
+**Completed:** `2026-11-06` · `amendment/a05-outbound-reliability`
 
 ---
 

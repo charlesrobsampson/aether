@@ -15,7 +15,9 @@
     "burst": 5,
     "queue_depth": 256,
     "dispatch_queue_depth": 256,
-    "dedupe_ttl_seconds": 900
+    "dedupe_ttl_seconds": 900,
+    "send_attempts": 3,
+    "retry_backoff_ms": 500
   },
   "default_provider": "signal",
   "providers": {

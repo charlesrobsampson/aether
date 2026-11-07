@@ -3,9 +3,12 @@ package transport
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestFakeMessenger(t *testing.T) {
@@ -69,5 +72,44 @@ func TestFakeMessenger(t *testing.T) {
 	wg.Wait()
 	if got, want := len(fake.Calls()), 3+senders; got != want {
 		t.Fatalf("Calls() length = %d, want %d", got, want)
+	}
+}
+
+// TestRetryable pins the retry classification: only network/context errors and
+// provider 429/5xx statuses are retryable, and Retry-After is preserved.
+func TestRetryable(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		wantRetry bool
+		wantAfter time.Duration
+	}{
+		{name: "nil", err: nil, wantRetry: false},
+		{name: "context deadline", err: context.DeadlineExceeded, wantRetry: true},
+		{name: "context canceled", err: context.Canceled, wantRetry: true},
+		{name: "network error", err: &net.DNSError{Err: "timeout", Name: "example"}, wantRetry: true},
+		{name: "429", err: &SendError{StatusCode: 429, RetryAfter: 2 * time.Second}, wantRetry: true, wantAfter: 2 * time.Second},
+		{name: "500", err: &SendError{StatusCode: 500}, wantRetry: true},
+		{name: "503", err: &SendError{StatusCode: 503}, wantRetry: true},
+		{name: "400 is terminal", err: &SendError{StatusCode: 400}, wantRetry: false},
+		{name: "401 is terminal", err: &SendError{StatusCode: 401}, wantRetry: false},
+		{name: "403 is terminal", err: &SendError{StatusCode: 403}, wantRetry: false},
+		{name: "404 is terminal", err: &SendError{StatusCode: 404}, wantRetry: false},
+		{name: "409 is terminal", err: &SendError{StatusCode: 409}, wantRetry: false},
+		{name: "unknown error is terminal", err: errors.New("boom"), wantRetry: false},
+		{name: "wrapped network error", err: fmt.Errorf("send: %w", &net.DNSError{Err: "timeout"}), wantRetry: true},
+		{name: "wrapped terminal status", err: fmt.Errorf("send: %w", &SendError{StatusCode: 400}), wantRetry: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			retry, after := Retryable(tc.err)
+			if retry != tc.wantRetry {
+				t.Fatalf("Retryable(%v) = %v, want %v", tc.err, retry, tc.wantRetry)
+			}
+			if after != tc.wantAfter {
+				t.Fatalf("Retryable(%v) Retry-After = %s, want %s", tc.err, after, tc.wantAfter)
+			}
+		})
 	}
 }

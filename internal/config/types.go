@@ -49,6 +49,12 @@ type LimitsConfig struct {
 	// DedupeTTLSeconds bounds how long an inbound (sender, message_id) is
 	// remembered. Zero means the store default (900s).
 	DedupeTTLSeconds int `json:"dedupe_ttl_seconds"`
+	// SendAttempts bounds outbound delivery attempts per job, including the
+	// first. Zero means the queue default (3).
+	SendAttempts int `json:"send_attempts"`
+	// RetryBackoffMS is the base exponential backoff between attempts in
+	// milliseconds. Zero means the queue default (500ms).
+	RetryBackoffMS int `json:"retry_backoff_ms"`
 }
 
 type ProviderConfig struct {

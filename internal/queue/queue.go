@@ -20,6 +20,10 @@ import (
 // ErrClosed is returned by Enqueue after Shutdown has begun.
 var ErrClosed = errors.New("queue: closed")
 
+// ErrFull is returned when the bounded buffer cannot accept a job (or a whole
+// batch) right now. Callers should push back rather than block (plan §3.3).
+var ErrFull = errors.New("queue: full")
+
 // ErrNoMessenger is returned by New when no transport.Messenger is supplied.
 var ErrNoMessenger = errors.New("queue: messenger is required")
 
@@ -30,6 +34,10 @@ const (
 	defaultBurst       = 5
 	defaultWorkers     = 1
 	defaultSendTimeout = 10 * time.Second
+	defaultAttempts    = 3
+
+	defaultRetryBackoff = 500 * time.Millisecond
+	maxRetryBackoff     = 30 * time.Second
 
 	// signalBuffer bounds the unexported test-observation channels. Sends are
 	// non-blocking, so a test that falls behind misses a notification rather
@@ -65,6 +73,13 @@ type Options struct {
 	// SendTimeout bounds one Messenger.Send attempt. Defaults to 10s; a
 	// non-positive value selects the default.
 	SendTimeout time.Duration
+	// Attempts bounds delivery attempts per job, including the first. A
+	// non-positive value selects the default (3).
+	Attempts int
+	// RetryBackoff is the base for deterministic exponential backoff between
+	// attempts. A non-positive value selects the default (500ms); the delay is
+	// capped at 30s.
+	RetryBackoff time.Duration
 	// Messenger performs the actual delivery.
 	Messenger transport.Messenger
 	// Clock defaults to the system clock.
@@ -73,30 +88,36 @@ type Options struct {
 	Muted func(recipient string) bool
 	// Metrics receives outbound/dropped counters. Defaults to metrics.Default.
 	Metrics *metrics.Registry
-	// OnError observes a failed delivery. Delivery failures are not retried.
+	// OnError observes every failed delivery attempt.
 	OnError func(Job, error)
+	// OnDeadLetter observes a job that exhausted its attempts or failed
+	// terminally. It is called once per job.
+	OnDeadLetter func(Job, error)
 }
 
 // Queue is a bounded outbound delivery queue. It is safe for concurrent use.
 type Queue struct {
-	jobs        chan Job
-	messenger   transport.Messenger
-	clock       Clock
-	muted       func(string) bool
-	metrics     *metrics.Registry
-	onError     func(Job, error)
-	limiter     *limiter
-	sendTimeout time.Duration
+	jobs         chan Job
+	messenger    transport.Messenger
+	clock        Clock
+	muted        func(string) bool
+	metrics      *metrics.Registry
+	onError      func(Job, error)
+	onDeadLetter func(Job, error)
+	limiter      *limiter
+	sendTimeout  time.Duration
+	attempts     int
+	retryBackoff time.Duration
 
 	// sendCtx is the parent of every per-attempt deadline. Forced shutdown
 	// cancels it so an in-flight provider call cannot outlive Shutdown.
 	sendCtx    context.Context
 	sendCancel context.CancelFunc
 
-	// mu guards closed and, through RLock, the send on jobs. Holding RLock
-	// while sending lets Shutdown wait for in-flight Enqueue calls instead of
-	// racing a closed channel.
-	mu        sync.RWMutex
+	// mu serialises enqueue with shutdown. It also guards closed, so an
+	// Enqueue that wins the race can finish before Shutdown closes the
+	// channel.
+	mu        sync.Mutex
 	closed    bool
 	closing   chan struct{}
 	forceStop chan struct{}
@@ -135,6 +156,17 @@ func New(opts Options) (*Queue, error) {
 	if sendTimeout <= 0 {
 		sendTimeout = defaultSendTimeout
 	}
+	attempts := opts.Attempts
+	if attempts <= 0 {
+		attempts = defaultAttempts
+	}
+	retryBackoff := opts.RetryBackoff
+	if retryBackoff <= 0 {
+		retryBackoff = defaultRetryBackoff
+	}
+	if retryBackoff > maxRetryBackoff {
+		retryBackoff = maxRetryBackoff
+	}
 	clock := opts.Clock
 	if clock == nil {
 		clock = systemClock{}
@@ -146,20 +178,23 @@ func New(opts Options) (*Queue, error) {
 	sendCtx, sendCancel := context.WithCancel(context.Background())
 
 	q := &Queue{
-		jobs:        make(chan Job, depth),
-		messenger:   opts.Messenger,
-		clock:       clock,
-		muted:       opts.Muted,
-		metrics:     registry,
-		onError:     opts.OnError,
-		limiter:     newLimiter(rate, float64(burst)),
-		sendTimeout: sendTimeout,
-		sendCtx:     sendCtx,
-		sendCancel:  sendCancel,
-		closing:     make(chan struct{}),
-		forceStop:   make(chan struct{}),
-		delivered:   make(chan struct{}, signalBuffer),
-		waiting:     make(chan struct{}, signalBuffer),
+		jobs:         make(chan Job, depth),
+		messenger:    opts.Messenger,
+		clock:        clock,
+		muted:        opts.Muted,
+		metrics:      registry,
+		onError:      opts.OnError,
+		onDeadLetter: opts.OnDeadLetter,
+		limiter:      newLimiter(rate, float64(burst)),
+		sendTimeout:  sendTimeout,
+		attempts:     attempts,
+		retryBackoff: retryBackoff,
+		sendCtx:      sendCtx,
+		sendCancel:   sendCancel,
+		closing:      make(chan struct{}),
+		forceStop:    make(chan struct{}),
+		delivered:    make(chan struct{}, signalBuffer),
+		waiting:      make(chan struct{}, signalBuffer),
 	}
 
 	q.wg.Add(workers)
@@ -169,26 +204,53 @@ func New(opts Options) (*Queue, error) {
 	return q, nil
 }
 
-// Enqueue accepts a job or reports why it was not accepted.
+// Enqueue accepts one job or reports why it was not accepted. It is shorthand
+// for EnqueueBatch with a single job.
 //
 // Muted recipients are dropped silently: the job is counted in
 // aether_dropped_total and Enqueue returns nil. When the buffer is full,
-// Enqueue blocks until a slot frees or Shutdown begins. After Shutdown it
+// Enqueue returns ErrFull immediately instead of blocking. After Shutdown it
 // returns ErrClosed.
 func (q *Queue) Enqueue(job Job) error {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
+	return q.EnqueueBatch([]Job{job})
+}
+
+// EnqueueBatch accepts every job or none. It checks free capacity once, under
+// the same mutex that serialises shutdown, so a rejected batch never leaves a
+// partial fan-out behind (plan §3.3). Muted recipients are counted as dropped
+// and do not consume capacity. Sends into the buffer are non-blocking after the
+// capacity check, so the critical section is bounded.
+func (q *Queue) EnqueueBatch(jobs []Job) error {
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
 
 	if q.closed {
 		return ErrClosed
 	}
-	if q.muted != nil && q.muted(job.Recipient) {
-		q.metrics.IncDropped()
-		return nil
+
+	accepted := make([]Job, 0, len(jobs))
+	muted := 0
+	for _, job := range jobs {
+		if q.muted != nil && q.muted(job.Recipient) {
+			muted++
+			continue
+		}
+		accepted = append(accepted, job)
 	}
 
-	q.jobs <- job
-	q.metrics.IncOutboundJobs()
+	if free := cap(q.jobs) - len(q.jobs); len(accepted) > free {
+		return ErrFull
+	}
+
+	q.metrics.AddDropped(uint64(muted))
+	q.metrics.AddOutboundJobs(uint64(len(accepted)))
+	for _, job := range accepted {
+		q.jobs <- job
+	}
 	return nil
 }
 
@@ -268,20 +330,66 @@ func (q *Queue) dropRemaining() {
 	}
 }
 
-// deliver waits for a token, sends the job with a bounded per-attempt deadline,
-// and signals the test hook.
+// deliver waits for a token, then sends the job with a bounded per-attempt
+// deadline. Retryable failures are retried with exponential backoff (or the
+// provider's Retry-After, whichever is longer) up to the configured attempt
+// budget; exhaustion or a terminal failure is dead-lettered. The test hook fires
+// once per completed job.
 func (q *Queue) deliver(job Job) {
-	for {
-		now := q.clock.Now()
-		if q.limiter.allow(job.Provider, now) {
-			ctx, cancel := context.WithTimeout(q.sendCtx, q.sendTimeout)
-			err := q.messenger.Send(ctx, job.Recipient, job.Text)
-			cancel()
-			if err != nil && q.onError != nil {
-				q.onError(job, err)
-			}
+	var lastErr error
+	for attempt := 1; attempt <= q.attempts; attempt++ {
+		if !q.waitForToken(job) {
+			q.metrics.IncDropped()
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(q.sendCtx, q.sendTimeout)
+		err := q.messenger.Send(ctx, job.Recipient, job.Text)
+		cancel()
+
+		if err == nil {
 			q.signalDelivered()
 			return
+		}
+
+		lastErr = err
+		if q.onError != nil {
+			q.onError(job, err)
+		}
+
+		retry, retryAfter := transport.Retryable(err)
+		if !retry || attempt == q.attempts {
+			break
+		}
+		// A forced shutdown has cancelled sendCtx; retrying would only delay
+		// the drain and cannot succeed.
+		if q.sendCtx.Err() != nil {
+			q.metrics.IncDropped()
+			return
+		}
+		if !q.waitRetry(attempt, retryAfter) {
+			q.metrics.IncDropped()
+			return
+		}
+	}
+
+	if q.onDeadLetter != nil {
+		q.onDeadLetter(job, lastErr)
+	}
+	q.signalDelivered()
+}
+
+// waitForToken parks on the fake-friendly clock until the job's provider bucket
+// has a token. It reports false when a forced shutdown interrupts the wait.
+func (q *Queue) waitForToken(job Job) bool {
+	for {
+		if q.sendCtx.Err() != nil {
+			return false
+		}
+
+		now := q.clock.Now()
+		if q.limiter.allow(job.Provider, now) {
+			return true
 		}
 
 		fired := make(chan struct{})
@@ -294,10 +402,53 @@ func (q *Queue) deliver(job Job) {
 		case <-fired:
 		case <-q.forceStop:
 			cancel()
-			q.metrics.IncDropped()
-			return
+			return false
 		}
 	}
+}
+
+// waitRetry waits for the larger of the exponential backoff and the provider's
+// Retry-After. It reports false when a forced shutdown interrupts the wait.
+func (q *Queue) waitRetry(attempt int, retryAfter time.Duration) bool {
+	delay := q.backoff(attempt)
+	if retryAfter > delay {
+		delay = retryAfter
+	}
+	if delay <= 0 {
+		return true
+	}
+
+	fired := make(chan struct{})
+	cancel := q.clock.AfterFunc(delay, func() {
+		close(fired)
+	})
+	q.signalWaiting()
+
+	select {
+	case <-fired:
+		return true
+	case <-q.forceStop:
+		cancel()
+		return false
+	}
+}
+
+// backoff returns base * 2^(attempt-1), capped at maxRetryBackoff.
+func (q *Queue) backoff(attempt int) time.Duration {
+	delay := q.retryBackoff
+	if delay <= 0 {
+		return 0
+	}
+	if delay > maxRetryBackoff {
+		delay = maxRetryBackoff
+	}
+	for i := 1; i < attempt; i++ {
+		if delay >= maxRetryBackoff/2 {
+			return maxRetryBackoff
+		}
+		delay *= 2
+	}
+	return delay
 }
 
 func (q *Queue) signalDelivered() {
