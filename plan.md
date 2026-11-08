@@ -331,13 +331,17 @@ func NewMessenger(cfg MessengerConfig) (Messenger, error)
   normalized `{sender, text, provider, group_id, message_id}` POST to `/receive`.
   `msg` reads the active profile's config for each inbound message, so toggling
   forwarding takes effect without restarting the receiver. The ingress token is
-  read only from `AETHER_INGRESS_TOKEN` and is never stored in config. After the
-  SQLite write, forwarding is handed to a bounded per-profile worker; the
-  signal-cli webhook ACK does not wait for Aether (A03). The worker retries
-  network errors, `429`, and `5xx` with bounded backoff, honours `Retry-After`,
-  and treats `400`/`401`/`403`/`404`/`409` as terminal (A02). When the forward
-  queue is full the incoming (newest) forward is dropped and counted in
-  `msg_forward_dropped_total{reason="queue_full"}`; it never blocks ingestion.
+  read only from `AETHER_INGRESS_TOKEN` and is never stored in config. The
+  inbound message and a `forward_outbox` row commit in one SQLite transaction
+  before the signal-cli webhook ACK; a failed durable write returns `500` so the
+  transport retries (A07). Forwarding is then handed to a bounded per-profile
+  worker, so the ACK does not wait for Aether (A03). The worker retries network
+  errors, `429`, and `5xx` with bounded backoff, honours `Retry-After`, and
+  treats `400`/`401`/`403`/`404`/`409` as terminal (A02). When the forward queue
+  is full the newest forward is counted in
+  `msg_forward_dropped_total{reason="queue_full"}` and stays pending in the
+  outbox for the next receiver start or `msg replay`; it never blocks ingestion
+  (A07).
   When `signal-receiver` serves multiple accounts, it resolves each account to
   its profile with `FindProfileForAccount` and applies that profile's setting.
   The existing `/api/signal/webhook` behavior is unchanged. The legacy `--forward`
@@ -579,9 +583,12 @@ send attempt, `send_attempts` is the total attempt count including the first,
   errors, `429`, and `5xx`. Never retry `400`, `401`, `403`, `404`, or `409`.
   `429` is the only retryable `4xx`; when `Retry-After` is present, wait at least
   that long. Backoff is exponential with jitter, capped at 30s.
-- **No durable outbox yet.** Queued work is lost on a crash; `msg`'s SQLite row
-  remains the manual replay source. A durable outbox is deferred (A07 is
-  reserved and not scheduled) until restart-loss becomes unacceptable.
+- **Inbound forwarding is durable; Aether's queues are not.** `msg` commits the
+  message and one `forward_outbox` row before its webhook ACK, replays pending
+  rows when an account DB opens or via `msg replay`, and deletes the row when
+  the worker finishes. A crash can duplicate an in-flight forward, which Aether's
+  `(sender, message_id)` dedupe absorbs. Aether's inbound and outbound queues
+  remain in memory, so queued Aether work is lost on a crash (A07).
 
 **Correlation**
 
@@ -617,6 +624,8 @@ stays loopback-only.
 | `msg_forward_duration_seconds` | summary | `profile`, `result` | forward POST latency |
 | `msg_forward_queue_depth` | gauge | `profile` | bounded forward queue occupancy |
 | `msg_forward_dropped_total` | counter | `profile`, `reason` | forwards dropped (`queue_full`, `terminal`, `shutdown`) |
+| `msg_forward_outbox_pending` | gauge | `profile` | durable forward outbox rows awaiting delivery |
+| `msg_forward_outbox_replayed_total` | counter | `profile` | outbox rows re-enqueued after a restart or replay |
 
 Labels are limited to small enums and the configured profile/provider names.
 
@@ -633,7 +642,7 @@ Labels are limited to small enums and the configured profile/provider names.
 | Retry-induced duplicate delivery | Commands run twice | `(sender, message_id)` dedupe (15m TTL); `message_id` in envelope and `route_log` |
 | Queue saturation | Blocked handlers, request pile-up | Bounded queues, fail-fast enqueue, `429` + `Retry-After` |
 | Silent delivery failure | Lost replies with a `202` already returned | `OnError` wired, dead-letter `route_log` rows, failure metrics |
-| Crash loses queued work | Message loss until manual replay | Accepted for now; durable outbox deferred to A07 |
+| Crash loses queued work | Message loss until manual replay | `msg` forwards replay from the outbox; Aether in-memory queues still lose queued work |
 
 ## 5. Acceptance Criteria
 
@@ -674,7 +683,7 @@ Labels are limited to small enums and the configured profile/provider names.
 | Config root | `AETHER_CONFIG_DIR` + explicit `root` argument; tests use `t.TempDir()` |
 | Reminders | `AfterFunc` for relative/absolute, `robfig/cron` for repeating schedules |
 | Config format | JSON only (manifest's YAML is superseded) |
-| `msg` forward failures | Persist-then-ACK; bounded per-profile forward worker; retry network/`429`/`5xx` only; no spool; msg's DB remains the manual replay source |
+| `msg` forward failures | Persist-then-ACK; durable outbox before ACK; bounded per-profile worker; retry network/`429`/`5xx` only; replay pending rows on restart and via `msg replay` |
 | Queue full | `429` + `Retry-After`; `/message` batches are all-or-nothing; `429` is the only retryable `4xx` |
 | Retry classification | Retry network errors, `429`, and `5xx`; `400`, `401`, `403`, `404`, `409` are terminal |
 | Inbound delivery | At-least-once with `(sender, message_id)` dedupe for 15 minutes |
@@ -682,7 +691,7 @@ Labels are limited to small enums and the configured profile/provider names.
 | Async boundaries | `msg` ACKs after its DB write; `/receive` returns `202` after enqueue; dispatch runs on a bounded worker |
 | Correlation | `message_id` propagates into the satellite envelope and `route_log` |
 | Observability | Hand-rolled Prometheus counters/gauges/summaries in both repos; metric families in §3.19 |
-| Durable outbox | Deferred; A07 is reserved and not scheduled until restart-loss matters |
+| Durable outbox | `msg` inbound forwards use a SQLite outbox committed before ACK; Aether's own queues remain in memory (A07) |
 | Approved groups | Opaque conversation ID, matched literally |
 | User `!config set` keys | `timezone`, `prefixes`, `muted`, satellite/command aliases; whitelist is extensible |
 | Wind-predictor config | User files only: no-fly days, personal windows, alert timing, per-rule thresholds; no credentials/global keys |
@@ -705,7 +714,7 @@ changes, and updates this plan in the same change.
 | A04 | §3.2, §3.6, §3.8, §3.19, §6 | Inbound idempotency by `(sender, message_id)`; propagate `message_id` to envelope and `route_log`. |
 | A05 | §3.3, §3.9, §3.19, §6 | Outbound retries, dead-letter, all-or-nothing batch enqueue, queue-full `429`. |
 | A06 | §3.19, §6 | Prometheus observability and correlation across both repos. |
-| A07 | — | Reserved: durable `msg` outbox + replay. Not scheduled. |
+| A07 | §3.10, §3.19, §6 | Durable `msg` forward outbox committed before ACK, automatic replay on open, and `msg replay`. |
 
 ---
 *Prepared based on the architecture manifest and latest user feedback.*

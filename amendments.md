@@ -35,7 +35,7 @@ gate, and `USER VERIFY`.
 | A04 | Inbound idempotency by `(sender, message_id)` | `.` | A03 |
 | A05 | Outbound retries, dead-letter, queue-full `429` | `.` | A04 |
 | A06 | Prometheus observability and correlation | `../msg` + `.` | A05 |
-| A07 | Durable `msg` outbox + replay (reserved, not scheduled) | `../msg` | A06 |
+| A07 | Durable `msg` outbox + replay | `../msg` + `.` | A06 |
 
 ---
 
@@ -220,8 +220,28 @@ go test ./... && gofmt -l . && go vet ./... && go build ./...
 
 ---
 
-### [ ] A07 — Durable `msg` outbox and replay (reserved, do not start)
+### [x] A07 — Durable `msg` outbox and replay
 **Depends on:** A06
-**Amends:** would add a durable `msg` outbox and replay command to `plan.md` §3.10/§3.19.
-**Why:** reserved for the case where losing queued forwards across a restart becomes unacceptable.
-No branch, failing tests, or session are defined until the human schedules it. Until then, `msg`'s SQLite row remains the manual replay source and restart-loss is an accepted risk.
+**Amends:** `plan.md` §3.10 (durable forward outbox before ACK), §3.19 (restart semantics and outbox metrics).
+**Why:** queued forwards are lost when `signal-receiver` restarts; after A07 restart-loss is bounded to the in-flight attempt and replay is at-least-once.
+**Repo:** `../msg` (code) + `.` (plan and tick)
+**Branch:** `amendment/a07-durable-outbox` (in both repos)
+**Write first:**
+- `client/signal_db_test.go::TestForwardOutboxPersistence` — message plus outbox row commit atomically; a duplicate `message_id` does not add a second row; pending rows can be listed, counted, and deleted.
+- `cmd/msg/outbox_test.go::TestOutboxSurvivesRestart` — a webhook save with forwarding enabled leaves a pending row when the forward queue is closed, and a fresh receiver replays it exactly once after restart.
+- `cmd/msg/outbox_test.go::TestOutboxTerminalDrop` — a terminal `401` is attempted once, records `dropped{reason="terminal"}`, and clears the outbox row.
+- `cmd/msg/outbox_test.go::TestWebhookAckFailsWhenOutboxWriteFails` — the webhook returns `500`, not `200`, when the durable write fails.
+- `cmd/msg/outbox_test.go::TestReplayCommand` — pending rows are re-enqueued in creation order and cleared after delivery.
+- `cmd/msg/outbox_test.go::TestOutboxMetrics` — `msg_forward_outbox_pending` and `msg_forward_outbox_replayed_total` move with replay.
+**Implement:** add a `forward_outbox` table (`message_id` primary key, `profile`, `url`, `payload`, `created_at_ms`) to the per-profile signal-cache SQLite DB. Add `SaveMessageWithForward`, `PutForward`, `PendingForwards`, `PendingForwardCount`, and `DeleteForward`, committing the message and outbox row in one transaction. Resolve the forwarding target before saving; when a message is forwardable, insert one outbox row before the webhook ACK and return `500` if the write fails. After commit, enqueue the row on the existing bounded per-profile worker; the worker deletes the row when delivery finishes (success or exhausted attempts), so a crash mid-attempt leaves it pending. Replay pending rows when an account DB is opened (including the active account at receiver start) and via a new `msg replay` command; replay is ordered by `created_at_ms`, deduped by `message_id`, and never blocks on a full queue. Add `msg_forward_outbox_pending{profile}` (gauge) and `msg_forward_outbox_replayed_total{profile}` (counter), and keep logs correlated by profile plus `message_id`.
+**Verify:**
+```bash
+(cd ../msg && go test -v ./client -run '^TestForwardOutboxPersistence$')
+(cd ../msg && go test -v ./cmd/msg -run '^(TestOutboxSurvivesRestart|TestOutboxTerminalDrop|TestWebhookAckFailsWhenOutboxWriteFails|TestReplayCommand|TestOutboxMetrics)$')
+(cd ../msg && go test ./... && go vet ./... && go build ./...)
+go test ./... && gofmt -l . && go vet ./... && go build ./...
+```
+**Done when:** a forwardable message and its outbox row commit atomically before the ACK; a restart replays pending rows at least once in order and clears them after delivery; terminal failures do not replay forever; `msg replay` drains the active profile's outbox; both new families are exposed with bounded labels; both gates are clean; `git -C ../msg status --short` shows only intended files; the tick records the `../msg` commit hash.
+**Session:** `opencode:ses_e59baf2a3ffeeLyyjRcU27NbvS` (A07 durable `msg` outbox)
+**Resume:** `git switch amendment/a07-durable-outbox && git -C ../msg switch amendment/a07-durable-outbox && opencode run -s ses_e59baf2a3ffeeLyyjRcU27NbvS "Resume A07 (durable msg outbox and replay). Read plan.md, process.md, and amendments.md, then continue."`
+**Completed:** `2026-11-07` · `msg` commit `0049228` on `amendment/a07-durable-outbox`.
