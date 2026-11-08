@@ -784,3 +784,140 @@ func TestDeadLetterAfterAttempts(t *testing.T) {
 	default:
 	}
 }
+
+// TestQueueMetrics proves the outbound depth gauge, send failure, retry,
+// dead-letter, and queue-full counters move with the queue (plan §3.19).
+func TestQueueMetrics(t *testing.T) {
+	t.Run("depth and queue full", func(t *testing.T) {
+		clock := testutil.NewFakeClock(testStart())
+		messenger := newScriptedMessenger()
+		messenger.blockFirst = true
+		messenger.started = make(chan struct{}, 1)
+		messenger.release = make(chan struct{})
+		registry := metrics.New()
+
+		q := newTestQueue(t, Options{
+			Depth:         1,
+			RatePerSecond: 1000,
+			Burst:         100,
+			Messenger:     messenger,
+			Clock:         clock,
+			Metrics:       registry,
+		})
+
+		if err := q.Enqueue(Job{Recipient: "+15555551001", Text: "in-flight", Provider: "fake"}); err != nil {
+			t.Fatalf("Enqueue(in-flight): %v", err)
+		}
+		waitSignal(t, messenger.started, "in-flight send")
+		if got := registry.OutboundQueueDepth(); got != 0 {
+			t.Fatalf("outbound queue depth after dequeue = %d, want 0", got)
+		}
+
+		if err := q.Enqueue(Job{Recipient: "+15555551002", Text: "buffered", Provider: "fake"}); err != nil {
+			t.Fatalf("Enqueue(buffered): %v", err)
+		}
+		if got := registry.OutboundQueueDepth(); got != 1 {
+			t.Fatalf("outbound queue depth = %d, want 1", got)
+		}
+
+		if err := q.Enqueue(Job{Recipient: "+15555551003", Text: "rejected", Provider: "fake"}); !errors.Is(err, ErrFull) {
+			t.Fatalf("Enqueue(full) = %v, want ErrFull", err)
+		}
+		if got := registry.QueueFull(metrics.QueueOutbound); got != 1 {
+			t.Fatalf("queue_full_total{queue=outbound} = %d, want 1", got)
+		}
+
+		close(messenger.release)
+		waitSignal(t, q.delivered, "in-flight delivery")
+		waitSignal(t, q.delivered, "buffered delivery")
+		if got := registry.OutboundQueueDepth(); got != 0 {
+			t.Fatalf("outbound queue depth after drain = %d, want 0", got)
+		}
+	})
+
+	t.Run("retries and send failures", func(t *testing.T) {
+		clock := testutil.NewFakeClock(testStart())
+		messenger := newScriptedMessenger(
+			&transport.SendError{StatusCode: 503},
+			&transport.SendError{StatusCode: 503},
+		)
+		registry := metrics.New()
+
+		q := newTestQueue(t, Options{
+			Depth:         8,
+			RatePerSecond: 1000,
+			Burst:         100,
+			Messenger:     messenger,
+			Clock:         clock,
+			Metrics:       registry,
+			Attempts:      3,
+			RetryBackoff:  500 * time.Millisecond,
+		})
+
+		if err := q.Enqueue(Job{Recipient: "+15555551101", Text: "retry", Provider: "fake"}); err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+		waitSignal(t, messenger.attempts, "attempt 1")
+		waitSignal(t, q.waiting, "backoff after attempt 1")
+		clock.Advance(500 * time.Millisecond)
+		waitSignal(t, messenger.attempts, "attempt 2")
+		waitSignal(t, q.waiting, "backoff after attempt 2")
+		clock.Advance(time.Second)
+		waitSignal(t, q.delivered, "delivery after a successful retry")
+
+		if got := registry.OutboundSendFailures("fake", metrics.SendFailure5xx); got != 2 {
+			t.Errorf("send failures{provider=fake,reason=5xx} = %d, want 2", got)
+		}
+		if got := registry.OutboundRetries("fake", metrics.SendFailure5xx); got != 2 {
+			t.Errorf("retries{provider=fake,reason=5xx} = %d, want 2", got)
+		}
+		if got := registry.DeadLetters("fake"); got != 0 {
+			t.Errorf("dead letters = %d, want 0", got)
+		}
+		if _, count := registry.OutboundSendDuration("fake", metrics.SendResultRetryable); count != 2 {
+			t.Errorf("retryable send duration count = %d, want 2", count)
+		}
+		if _, count := registry.OutboundSendDuration("fake", metrics.SendResultOK); count != 1 {
+			t.Errorf("successful send duration count = %d, want 1", count)
+		}
+	})
+
+	t.Run("dead letter after attempts", func(t *testing.T) {
+		clock := testutil.NewFakeClock(testStart())
+		messenger := newScriptedMessenger(
+			&transport.SendError{StatusCode: 500},
+			&transport.SendError{StatusCode: 500},
+		)
+		registry := metrics.New()
+
+		q := newTestQueue(t, Options{
+			Depth:         8,
+			RatePerSecond: 1000,
+			Burst:         100,
+			Messenger:     messenger,
+			Clock:         clock,
+			Metrics:       registry,
+			Attempts:      2,
+			RetryBackoff:  100 * time.Millisecond,
+		})
+
+		if err := q.Enqueue(Job{Recipient: "+15555551201", Text: "exhausted", Provider: "fake"}); err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+		waitSignal(t, messenger.attempts, "attempt 1")
+		waitSignal(t, q.waiting, "backoff after attempt 1")
+		clock.Advance(100 * time.Millisecond)
+		waitSignal(t, messenger.attempts, "attempt 2")
+		waitSignal(t, q.delivered, "exhausted delivery")
+
+		if got := registry.OutboundSendFailures("fake", metrics.SendFailure5xx); got != 2 {
+			t.Errorf("send failures = %d, want 2", got)
+		}
+		if got := registry.OutboundRetries("fake", metrics.SendFailure5xx); got != 1 {
+			t.Errorf("retries = %d, want 1", got)
+		}
+		if got := registry.DeadLetters("fake"); got != 1 {
+			t.Errorf("dead letters = %d, want 1", got)
+		}
+	})
+}

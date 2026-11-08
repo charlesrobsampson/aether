@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/charlesrobsampson/aether/internal/config"
+	"github.com/charlesrobsampson/aether/internal/metrics"
 	"github.com/charlesrobsampson/aether/internal/model"
 )
 
@@ -396,5 +397,132 @@ func TestReceiveDedupeReleasedOnSubmitFailure(t *testing.T) {
 	}
 	if !released {
 		t.Fatal("claim was not released after the queue rejected the message")
+	}
+}
+
+// TestReceiveMetrics proves every documented /receive outcome increments its
+// result counter and that a suppressed duplicate also increments the dedupe
+// counter (plan §3.19).
+func TestReceiveMetrics(t *testing.T) {
+	const approved = "+15555550102"
+
+	body := `{"sender":"` + approved + `","text":"!test","message_id":"metric-1"}`
+	cfg := func() *config.Config {
+		return &config.Config{
+			Admin: config.AdminConfig{ApprovedNumbers: []string{approved}},
+		}
+	}
+	tokenConfig := func() *config.Config {
+		config := cfg()
+		config.System.Auth.IngressToken = "ingress-secret"
+		return config
+	}
+
+	tests := []struct {
+		name       string
+		cfg        func() *config.Config
+		body       string
+		token      string
+		configure  func(*ReceiveOptions)
+		wantStatus int
+		wantResult string
+		wantDedupe uint64
+	}{
+		{
+			name:       "accepted",
+			cfg:        cfg,
+			body:       body,
+			wantStatus: http.StatusAccepted,
+			wantResult: metrics.ReceiveAccepted,
+		},
+		{
+			name:       "duplicate",
+			cfg:        cfg,
+			body:       body,
+			wantStatus: http.StatusAccepted,
+			wantResult: metrics.ReceiveDuplicate,
+			wantDedupe: 1,
+			configure: func(options *ReceiveOptions) {
+				options.Claim = func(context.Context, string, string) (bool, error) {
+					return false, nil
+				}
+			},
+		},
+		{
+			name: "queue full",
+			cfg:  cfg,
+			body: body,
+			configure: func(options *ReceiveOptions) {
+				options.Handle = func(context.Context, model.Inbound) error {
+					return ErrQueueFull
+				}
+			},
+			wantStatus: http.StatusTooManyRequests,
+			wantResult: metrics.ReceiveQueueFull,
+		},
+		{
+			name:       "bad request",
+			cfg:        cfg,
+			body:       `{"sender":`,
+			wantStatus: http.StatusBadRequest,
+			wantResult: metrics.ReceiveBadRequest,
+		},
+		{
+			name:       "unauthorized",
+			cfg:        tokenConfig,
+			body:       body,
+			wantStatus: http.StatusUnauthorized,
+			wantResult: metrics.ReceiveUnauthorized,
+		},
+	}
+
+	results := []string{
+		metrics.ReceiveAccepted,
+		metrics.ReceiveDuplicate,
+		metrics.ReceiveQueueFull,
+		metrics.ReceiveBadRequest,
+		metrics.ReceiveUnauthorized,
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := metrics.New()
+			options := ReceiveOptions{
+				Config:  tc.cfg,
+				Metrics: registry,
+				Handle:  func(context.Context, model.Inbound) error { return nil },
+			}
+			if tc.configure != nil {
+				tc.configure(&options)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/receive", strings.NewReader(tc.body))
+			if tc.token != "" {
+				req.Header.Set("X-Aether-Token", tc.token)
+			}
+			rec := httptest.NewRecorder()
+			NewReceiveHandler(options).ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body %q)", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			for _, result := range results {
+				want := uint64(0)
+				if result == tc.wantResult {
+					want = 1
+				}
+				if got := registry.ReceiveRequests(result); got != want {
+					t.Errorf("receive_requests_total{result=%q} = %d, want %d", result, got, want)
+				}
+			}
+			if got := registry.DedupeHits(); got != tc.wantDedupe {
+				t.Errorf("dedupe hits = %d, want %d", got, tc.wantDedupe)
+			}
+			if tc.wantResult == metrics.ReceiveQueueFull {
+				if got := registry.QueueFull(metrics.QueueInbound); got != 1 {
+					t.Errorf("queue_full_total{queue=inbound} = %d, want 1", got)
+				}
+			}
+		})
 	}
 }

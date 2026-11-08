@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/charlesrobsampson/aether/internal/config"
+	"github.com/charlesrobsampson/aether/internal/metrics"
 	"github.com/charlesrobsampson/aether/internal/model"
 	"github.com/charlesrobsampson/aether/internal/store"
 	"github.com/charlesrobsampson/aether/internal/testutil"
@@ -458,5 +459,68 @@ func TestEnvelopeAndRouteLogCarryMessageID(t *testing.T) {
 	}
 	if loggedID != messageID {
 		t.Fatalf("route_log.message_id = %q, want %q", loggedID, messageID)
+	}
+}
+
+// roundTripFunc adapts a function to http.RoundTripper so a test can fail a
+// dispatch without touching the network.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+// TestDispatchMetrics proves a satellite timeout records the dispatch duration
+// summary and the bounded failure reason (plan §3.19).
+func TestDispatchMetrics(t *testing.T) {
+	const sender = "+15555550102"
+
+	root := testutil.TempConfig(t)
+	cfg, err := config.LoadConfig(root)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	testutil.WriteJSON(t, filepath.Join(root, "routes.json"), routesForTest(cfg, "http://satellite.invalid"))
+	cfg, err = config.LoadConfig(root)
+	if err != nil {
+		t.Fatalf("LoadConfig after routes: %v", err)
+	}
+
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("store.Close: %v", err)
+		}
+	})
+
+	registry := metrics.New()
+	rt := New(Options{
+		Config: func() *config.Config { return cfg },
+		Store:  st,
+		Client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, context.DeadlineExceeded
+		})},
+		Metrics: registry,
+	})
+	rt.Dispatch(context.Background(), model.Inbound{
+		Sender:    sender,
+		Text:      "!fly FPS",
+		Provider:  "signal",
+		MessageID: "timeout-1",
+	})
+
+	if got := registry.DispatchFailures(metrics.DispatchReasonTimeout); got != 1 {
+		t.Errorf("dispatch failures{reason=timeout} = %d, want 1", got)
+	}
+	sum, count := registry.DispatchDuration(metrics.DispatchStatusFailed)
+	if count != 1 {
+		t.Errorf("dispatch duration{status=failed} count = %d, want 1", count)
+	}
+	if sum < 0 {
+		t.Errorf("dispatch duration sum = %v, want non-negative", sum)
+	}
+	if got := registry.DispatchFailures(metrics.DispatchReasonPost); got != 0 {
+		t.Errorf("dispatch failures{reason=post} = %d, want 0", got)
 	}
 }

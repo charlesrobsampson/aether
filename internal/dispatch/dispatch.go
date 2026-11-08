@@ -10,6 +10,7 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/charlesrobsampson/aether/internal/metrics"
 	"github.com/charlesrobsampson/aether/internal/model"
 )
 
@@ -35,12 +36,16 @@ type Options struct {
 	Depth int
 	// Handler runs one accepted message. It is required.
 	Handler Handler
+	// Metrics receives the inbound queue depth gauge. Nil selects the
+	// process-wide default registry.
+	Metrics *metrics.Registry
 }
 
 // Queue is a bounded, single-worker dispatch queue.
 type Queue struct {
 	jobs    chan model.Inbound
 	handler Handler
+	metrics *metrics.Registry
 	ctx     context.Context
 	cancel  context.CancelFunc
 
@@ -63,9 +68,14 @@ func New(opts Options) (*Queue, error) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	registry := opts.Metrics
+	if registry == nil {
+		registry = metrics.Default
+	}
 	q := &Queue{
 		jobs:      make(chan model.Inbound, depth),
 		handler:   opts.Handler,
+		metrics:   registry,
 		ctx:       ctx,
 		cancel:    cancel,
 		forceStop: make(chan struct{}),
@@ -92,6 +102,7 @@ func (q *Queue) Submit(ctx context.Context, in model.Inbound) error {
 
 	select {
 	case q.jobs <- in:
+		q.metrics.SetInboundQueueDepth(len(q.jobs))
 		return nil
 	default:
 		return ErrFull
@@ -136,6 +147,7 @@ func (q *Queue) Shutdown(ctx context.Context) error {
 func (q *Queue) run() {
 	defer q.wg.Done()
 	for job := range q.jobs {
+		q.metrics.SetInboundQueueDepth(len(q.jobs))
 		select {
 		case <-q.forceStop:
 			// A forced shutdown abandons buffered work; the handler below

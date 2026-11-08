@@ -71,6 +71,7 @@ func NewServer(options ServerOptions) http.Handler {
 		Claim:     options.Claim,
 		Release:   options.Release,
 		OnUnknown: options.OnUnknown,
+		Metrics:   registry,
 	}))
 	mux.Handle("POST /message", NewMessageHandler(MessageOptions{
 		Config:   options.Config,

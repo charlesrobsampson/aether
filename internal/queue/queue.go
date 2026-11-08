@@ -10,6 +10,8 @@ package queue
 import (
 	"context"
 	"errors"
+	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -243,6 +245,7 @@ func (q *Queue) EnqueueBatch(jobs []Job) error {
 	}
 
 	if free := cap(q.jobs) - len(q.jobs); len(accepted) > free {
+		q.metrics.IncQueueFull(metrics.QueueOutbound)
 		return ErrFull
 	}
 
@@ -251,6 +254,7 @@ func (q *Queue) EnqueueBatch(jobs []Job) error {
 	for _, job := range accepted {
 		q.jobs <- job
 	}
+	q.metrics.SetOutboundQueueDepth(len(q.jobs))
 	return nil
 }
 
@@ -294,6 +298,7 @@ func (q *Queue) worker() {
 	for {
 		select {
 		case job := <-q.jobs:
+			q.metrics.SetOutboundQueueDepth(len(q.jobs))
 			q.deliver(job)
 		case <-q.closing:
 			q.drain()
@@ -308,6 +313,7 @@ func (q *Queue) drain() {
 	for {
 		select {
 		case job := <-q.jobs:
+			q.metrics.SetOutboundQueueDepth(len(q.jobs))
 			q.deliver(job)
 		case <-q.forceStop:
 			q.dropRemaining()
@@ -325,6 +331,7 @@ func (q *Queue) dropRemaining() {
 		case <-q.jobs:
 			q.metrics.IncDropped()
 		default:
+			q.metrics.SetOutboundQueueDepth(len(q.jobs))
 			return
 		}
 	}
@@ -336,6 +343,7 @@ func (q *Queue) dropRemaining() {
 // budget; exhaustion or a terminal failure is dead-lettered. The test hook fires
 // once per completed job.
 func (q *Queue) deliver(job Job) {
+	provider := providerLabel(job.Provider)
 	var lastErr error
 	for attempt := 1; attempt <= q.attempts; attempt++ {
 		if !q.waitForToken(job) {
@@ -344,20 +352,32 @@ func (q *Queue) deliver(job Job) {
 		}
 
 		ctx, cancel := context.WithTimeout(q.sendCtx, q.sendTimeout)
+		start := time.Now()
 		err := q.messenger.Send(ctx, job.Recipient, job.Text)
+		elapsed := time.Since(start)
 		cancel()
 
 		if err == nil {
+			q.metrics.ObserveOutboundSendDuration(provider, metrics.SendResultOK, elapsed)
 			q.signalDelivered()
 			return
 		}
 
 		lastErr = err
+		reason := sendFailureReason(err)
+		q.metrics.IncOutboundSendFailure(provider, reason)
+
+		retry, retryAfter := transport.Retryable(err)
+		result := metrics.SendResultTerminal
+		if retry {
+			result = metrics.SendResultRetryable
+		}
+		q.metrics.ObserveOutboundSendDuration(provider, result, elapsed)
+
 		if q.onError != nil {
 			q.onError(job, err)
 		}
 
-		retry, retryAfter := transport.Retryable(err)
 		if !retry || attempt == q.attempts {
 			break
 		}
@@ -367,16 +387,65 @@ func (q *Queue) deliver(job Job) {
 			q.metrics.IncDropped()
 			return
 		}
+		q.metrics.IncOutboundRetry(provider, reason)
 		if !q.waitRetry(attempt, retryAfter) {
 			q.metrics.IncDropped()
 			return
 		}
 	}
 
+	q.metrics.IncDeadLetter(provider)
+	q.metrics.SetOutboundQueueDepth(len(q.jobs))
 	if q.onDeadLetter != nil {
 		q.onDeadLetter(job, lastErr)
 	}
 	q.signalDelivered()
+}
+
+// providerLabel keeps the metric label set bounded and non-empty. An unset job
+// provider is the default bucket.
+func providerLabel(provider string) string {
+	if provider == "" {
+		return "default"
+	}
+	return provider
+}
+
+// sendFailureReason maps a send error onto the bounded reason labels documented
+// for aether_outbound_send_failures_total and aether_outbound_retries_total.
+func sendFailureReason(err error) string {
+	if err == nil {
+		return metrics.SendFailureOther
+	}
+
+	var sendErr *transport.SendError
+	if errors.As(err, &sendErr) && sendErr.StatusCode > 0 {
+		switch {
+		case sendErr.StatusCode == http.StatusTooManyRequests:
+			return metrics.SendFailure429
+		case sendErr.StatusCode >= 500 && sendErr.StatusCode <= 599:
+			return metrics.SendFailure5xx
+		case sendErr.StatusCode >= 400 && sendErr.StatusCode <= 499:
+			return metrics.SendFailure4xx
+		default:
+			return metrics.SendFailureOther
+		}
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) {
+		return metrics.SendFailureTimeout
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return metrics.SendFailureTimeout
+		}
+		return metrics.SendFailureNetwork
+	}
+	if errors.Is(err, context.Canceled) {
+		return metrics.SendFailureNetwork
+	}
+	return metrics.SendFailureOther
 }
 
 // waitForToken parks on the fake-friendly clock until the job's provider bucket

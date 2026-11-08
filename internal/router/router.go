@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charlesrobsampson/aether/internal/config"
+	"github.com/charlesrobsampson/aether/internal/metrics"
 	"github.com/charlesrobsampson/aether/internal/model"
 	"github.com/charlesrobsampson/aether/internal/session"
 	"github.com/charlesrobsampson/aether/internal/store"
@@ -55,6 +56,9 @@ type Options struct {
 	// Builtins are internal command handlers, checked in order before any
 	// file-registered route.
 	Builtins []Builtin
+	// Metrics receives dispatch latency and failure counters. Nil selects the
+	// process-wide default registry.
+	Metrics *metrics.Registry
 }
 
 // Router dispatches inbound messages to registered satellites.
@@ -64,12 +68,16 @@ type Router struct {
 	client   *http.Client
 	sessions *session.Store
 	builtins []Builtin
+	metrics  *metrics.Registry
 }
 
 // New returns a Router. With no options it has no configuration source and
 // drops every message; pass Options to wire it.
 func New(options ...Options) *Router {
-	r := &Router{client: &http.Client{Timeout: defaultClientTimeout}}
+	r := &Router{
+		client:  &http.Client{Timeout: defaultClientTimeout},
+		metrics: metrics.Default,
+	}
 	if len(options) == 0 {
 		return r
 	}
@@ -81,6 +89,9 @@ func New(options ...Options) *Router {
 	r.builtins = option.Builtins
 	if option.Client != nil {
 		r.client = option.Client
+	}
+	if option.Metrics != nil {
+		r.metrics = option.Metrics
 	}
 	return r
 }

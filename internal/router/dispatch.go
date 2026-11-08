@@ -4,19 +4,27 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/charlesrobsampson/aether/internal/config"
+	"github.com/charlesrobsampson/aether/internal/metrics"
 	"github.com/charlesrobsampson/aether/internal/model"
 	"github.com/charlesrobsampson/aether/internal/session"
 	"github.com/charlesrobsampson/aether/internal/store"
 	"github.com/charlesrobsampson/aether/pkg/sdk"
 )
+
+// dispatchStartKey carries the Dispatch start time so record can observe whole
+// dispatch latency exactly once, on every outcome.
+type dispatchStartKey struct{}
 
 // transmission is the JSON envelope Aether posts to a satellite (plan §3.6).
 // Args carries the converted, typed values; the metadata fields let the
@@ -40,8 +48,14 @@ type transmission struct {
 // the reply is matched against the session satellite's command patterns and
 // posted to the matched command's path.
 func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = context.WithValue(ctx, dispatchStartKey{}, time.Now())
+
 	cfg := r.configSnapshot()
 	if cfg == nil {
+		r.observeFailure(metrics.DispatchReasonConfig)
 		r.record(ctx, store.RouteLog{
 			Direction: "inbound",
 			MessageID: in.MessageID,
@@ -94,6 +108,7 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 
 	loc, err := userLocation(user.Timezone)
 	if err != nil {
+		r.observeFailure(metrics.DispatchReasonParse)
 		r.record(ctx, store.RouteLog{
 			Direction: "inbound",
 			MessageID: in.MessageID,
@@ -157,12 +172,14 @@ func (r *Router) dispatchBuiltin(ctx context.Context, in model.Inbound, builtin 
 	if builtin.Handle == nil {
 		record.Status = "failed"
 		record.Error = "built-in handler is not configured"
+		r.observeFailure(metrics.DispatchReasonBuiltin)
 		r.record(ctx, record)
 		return
 	}
 	if err := builtin.Handle(ctx, in, text); err != nil {
 		record.Status = "failed"
 		record.Error = err.Error()
+		r.observeFailure(metrics.DispatchReasonBuiltin)
 	}
 	r.record(ctx, record)
 }
@@ -181,6 +198,7 @@ func (r *Router) dispatchRoute(ctx context.Context, in model.Inbound, route conf
 
 		args, err := sdk.ConvertArgs(spec, raw, loc)
 		if err != nil {
+			r.observeFailure(metrics.DispatchReasonParse)
 			r.record(ctx, store.RouteLog{
 				Direction: "inbound",
 				MessageID: in.MessageID,
@@ -205,6 +223,7 @@ func (r *Router) dispatchRoute(ctx context.Context, in model.Inbound, route conf
 			MessageID: in.MessageID,
 		}
 		if err := r.post(ctx, route.Endpoint, command.Path, envelope); err != nil {
+			r.observeFailure(dispatchFailureReason(err))
 			r.record(ctx, store.RouteLog{
 				Direction: "inbound",
 				MessageID: in.MessageID,
@@ -268,6 +287,7 @@ func (r *Router) dispatchSession(ctx context.Context, cfg *config.Config, in mod
 
 	loc, err := userLocation(user.Timezone)
 	if err != nil {
+		r.observeFailure(metrics.DispatchReasonParse)
 		r.record(ctx, store.RouteLog{
 			Direction: "inbound",
 			MessageID: in.MessageID,
@@ -397,13 +417,51 @@ func (r *Router) configSnapshot() *config.Config {
 // record writes one audit row. Audit failures are deliberately swallowed: a
 // logging problem must not change message handling.
 func (r *Router) record(ctx context.Context, rec store.RouteLog) {
-	if r == nil || r.store == nil {
+	if r == nil {
+		return
+	}
+	if r.metrics != nil && ctx != nil {
+		if start, ok := ctx.Value(dispatchStartKey{}).(time.Time); ok {
+			r.metrics.ObserveDispatchDuration(rec.Status, time.Since(start))
+		}
+	}
+	if rec.Status == "failed" {
+		if rec.MessageID != "" {
+			log.Printf("router: dispatch failed satellite=%s message_id=%s: %s",
+				rec.Satellite, rec.MessageID, rec.Error)
+		} else {
+			log.Printf("router: dispatch failed satellite=%s: %s",
+				rec.Satellite, rec.Error)
+		}
+	}
+	if r.store == nil {
 		return
 	}
 	if rec.CreatedAt.IsZero() {
 		rec.CreatedAt = time.Now()
 	}
 	_ = r.store.LogRoute(ctx, rec)
+}
+
+// observeFailure counts one failed dispatch with a bounded reason.
+func (r *Router) observeFailure(reason string) {
+	if r == nil || r.metrics == nil {
+		return
+	}
+	r.metrics.IncDispatchFailure(reason)
+}
+
+// dispatchFailureReason distinguishes a satellite timeout from other POST
+// failures for aether_dispatch_failures_total.
+func dispatchFailureReason(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return metrics.DispatchReasonTimeout
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return metrics.DispatchReasonTimeout
+	}
+	return metrics.DispatchReasonPost
 }
 
 // resolveRoute selects the route named by the first token and returns the

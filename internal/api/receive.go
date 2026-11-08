@@ -16,6 +16,7 @@ import (
 
 	"github.com/charlesrobsampson/aether/internal/auth"
 	"github.com/charlesrobsampson/aether/internal/config"
+	"github.com/charlesrobsampson/aether/internal/metrics"
 	"github.com/charlesrobsampson/aether/internal/model"
 )
 
@@ -64,6 +65,9 @@ type ReceiveOptions struct {
 	// denied. Deduplication against pending approvals belongs to the
 	// admin-manager.
 	OnUnknown func(phone string)
+	// Metrics receives receive outcome counters. Nil selects the
+	// process-wide default registry.
+	Metrics *metrics.Registry
 }
 
 type receiveHandler struct {
@@ -76,11 +80,15 @@ type receiveHandler struct {
 // receive 202, but the approval callback is invoked first. Parse failures are
 // reported to the caller as a generic 400 so decoder details never leak.
 func NewReceiveHandler(options ReceiveOptions) http.Handler {
+	if options.Metrics == nil {
+		options.Metrics = metrics.Default
+	}
 	return &receiveHandler{options: options}
 }
 
 func (h *receiveHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		h.options.Metrics.IncReceiveRequest(metrics.ReceiveBadRequest)
 		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -92,12 +100,14 @@ func (h *receiveHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ingressTokenOK(cfg, r) {
+		h.options.Metrics.IncReceiveRequest(metrics.ReceiveUnauthorized)
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return
 	}
 
 	inbound, err := decodeInbound(w, r)
 	if err != nil {
+		h.options.Metrics.IncReceiveRequest(metrics.ReceiveBadRequest)
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
@@ -105,11 +115,13 @@ func (h *receiveHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case auth.IsDenied(cfg, inbound.Sender):
 		// Denied wins even when the number also appears in approved_numbers.
+		h.options.Metrics.IncReceiveRequest(metrics.ReceiveAccepted)
 		w.WriteHeader(http.StatusAccepted)
 	case auth.RoleOf(cfg, inbound.Sender) == auth.Denied:
 		if h.options.OnUnknown != nil {
 			h.options.OnUnknown(inbound.Sender)
 		}
+		h.options.Metrics.IncReceiveRequest(metrics.ReceiveAccepted)
 		w.WriteHeader(http.StatusAccepted)
 	default:
 		claimed := false
@@ -124,6 +136,8 @@ func (h *receiveHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			case !fresh:
 				// A duplicate within the TTL is acknowledged without
 				// dispatching it again.
+				h.options.Metrics.IncDedupeHits()
+				h.options.Metrics.IncReceiveRequest(metrics.ReceiveDuplicate)
 				w.WriteHeader(http.StatusAccepted)
 				return
 			default:
@@ -142,6 +156,8 @@ func (h *receiveHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				if errors.Is(err, ErrQueueFull) {
+					h.options.Metrics.IncQueueFull(metrics.QueueInbound)
+					h.options.Metrics.IncReceiveRequest(metrics.ReceiveQueueFull)
 					w.Header().Set("Retry-After", "1")
 					http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
 					return
@@ -150,6 +166,7 @@ func (h *receiveHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		h.options.Metrics.IncReceiveRequest(metrics.ReceiveAccepted)
 		w.WriteHeader(http.StatusAccepted)
 	}
 }

@@ -189,7 +189,7 @@ go test ./... && gofmt -l . && go vet ./... && go build ./...
 
 ---
 
-### [ ] A06 — Prometheus observability and correlation
+### [x] A06 — Prometheus observability and correlation
 **Depends on:** A05
 **Amends:** `plan.md` §3.19 (metric families and correlation), §6 (observability).
 **Why:** reliability behavior is invisible without counters, latency, and one correlation ID.
@@ -214,8 +214,9 @@ go test -v ./internal/router -run '^TestDispatchMetrics$'
 go test ./... && gofmt -l . && go vet ./... && go build ./...
 ```
 **Done when:** every §3.19 family is exposed; label cardinality is bounded; `msg` serves metrics only on its loopback listener; logs carry the correlation ID; both gates are clean; `git -C ../msg status --short` shows only intended files; the tick records the `../msg` commit hash.
-**Session:** `<fill at task start>`
-**Resume:** `<fill at task start: exact command for your CLI>`
+**Session:** `opencode:ses_e59baf2a3ffeeLyyjRcU27NbvS` (A06 observability)
+**Resume:** `git switch amendment/a06-observability && git -C ../msg switch amendment/a06-observability && opencode run -s ses_e59baf2a3ffeeLyyjRcU27NbvS "Resume A06 (observability). Read plan.md, process.md, and amendments.md, then continue."`
+**Completed:** `2026-11-07` · `msg` commit `44a51a4` on `amendment/a06-observability`.
 
 ---
 
