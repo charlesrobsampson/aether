@@ -15,6 +15,9 @@ const (
 	layoutDateTimeSpace = "2006-01-02 15:04"
 	layoutDateTimeT     = "2006-01-02T15:04"
 	layoutClock         = "15:04"
+	// layoutDateTimeOffsetNoSeconds accepts RFC3339-shaped values that omit
+	// seconds, e.g. 2026-11-08T09:00-07:00. Full RFC3339 is tried first.
+	layoutDateTimeOffsetNoSeconds = "2006-01-02T15:04Z07:00"
 )
 
 var weekdayNames = map[string]time.Weekday{
@@ -53,6 +56,9 @@ func toUTC(value string, loc *time.Location, now time.Time) (time.Time, error) {
 
 	// 1. RFC3339 carries its own offset; the instant is independent of loc.
 	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t.UTC(), nil
+	}
+	if t, err := time.Parse(layoutDateTimeOffsetNoSeconds, v); err == nil {
 		return t.UTC(), nil
 	}
 

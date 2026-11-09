@@ -51,8 +51,11 @@ const (
 type Job struct {
 	// Recipient is a phone number or provider-specific conversation ID.
 	Recipient string
-	// Text is the message body.
+	// Text is the message body. It is ignored when Reaction is set.
 	Text string
+	// Reaction, when non-nil, attaches a reaction to an existing message
+	// instead of sending text.
+	Reaction *transport.Reaction
 	// Provider selects the rate-limit bucket. Empty means the default bucket.
 	Provider string
 }
@@ -353,7 +356,12 @@ func (q *Queue) deliver(job Job) {
 
 		ctx, cancel := context.WithTimeout(q.sendCtx, q.sendTimeout)
 		start := time.Now()
-		err := q.messenger.Send(ctx, job.Recipient, job.Text)
+		var err error
+		if job.Reaction != nil {
+			err = q.messenger.React(ctx, *job.Reaction)
+		} else {
+			err = q.messenger.Send(ctx, job.Recipient, job.Text)
+		}
 		elapsed := time.Since(start)
 		cancel()
 

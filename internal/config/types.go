@@ -100,10 +100,11 @@ type Aliases struct {
 }
 
 type SatelliteConfig struct {
-	Name     string          `json:"name"`
-	Trigger  string          `json:"trigger"`
-	Endpoint string          `json:"endpoint"`
-	Commands []CommandConfig `json:"commands"`
+	Name        string          `json:"name"`
+	Trigger     string          `json:"trigger"`
+	Endpoint    string          `json:"endpoint"`
+	Description string          `json:"description,omitempty"`
+	Commands    []CommandConfig `json:"commands"`
 }
 
 type CommandConfig struct {

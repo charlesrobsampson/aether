@@ -56,6 +56,15 @@ func (e *Error) Error() string {
 	return e.Message
 }
 
+// UserMessage exposes client-correctable failures to the router so they can be
+// sent back to the sender. Server-side failures stay in the route log.
+func (e *Error) UserMessage() string {
+	if e == nil || e.Status >= http.StatusInternalServerError {
+		return ""
+	}
+	return e.Message
+}
+
 // StatusOf returns the HTTP status carried by err, or 500 for an untyped error.
 func StatusOf(err error) int {
 	var managerErr *Error

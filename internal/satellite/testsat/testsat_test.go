@@ -2,6 +2,7 @@ package testsat
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -141,20 +142,26 @@ func TestReminderFlow(t *testing.T) {
 			t.Fatalf("HandleRemind: %v", err)
 		}
 
+		// Absolute reminders acknowledge the normalized instant right away.
+		ack := requireResponses(t, sender, 1)
+		if !strings.Contains(ack[0].Text, "Reminder set for Mon 2026-01-05 12:30 CST: stretch") {
+			t.Errorf("ack = %q", ack[0].Text)
+		}
+
 		clock.Advance(6*time.Hour + 29*time.Minute)
-		requireResponses(t, sender, 0)
+		requireResponses(t, sender, 1)
 
 		clock.Advance(time.Minute)
-		got := requireResponses(t, sender, 1)
-		if got[0].Text != "stretch" {
-			t.Errorf("text = %q, want %q", got[0].Text, "stretch")
+		got := requireResponses(t, sender, 2)
+		if got[1].Text != "stretch" {
+			t.Errorf("text = %q, want %q", got[1].Text, "stretch")
 		}
-		if len(got[0].Recipients) != 1 || got[0].Recipients[0] != testSender {
-			t.Errorf("recipients = %v, want [%s]", got[0].Recipients, testSender)
+		if len(got[1].Recipients) != 1 || got[1].Recipients[0] != testSender {
+			t.Errorf("recipients = %v, want [%s]", got[1].Recipients, testSender)
 		}
 
 		clock.Advance(24 * time.Hour)
-		requireResponses(t, sender, 1)
+		requireResponses(t, sender, 2)
 	})
 
 	t.Run("test echoes test received", func(t *testing.T) {
@@ -204,4 +211,89 @@ func TestReminderFlow(t *testing.T) {
 			t.Error("HandleTest without sender = nil, want error")
 		}
 	})
+}
+
+func TestReminderParsingNormalizesWhitespaceAndUnits(t *testing.T) {
+	start := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+
+	t.Run("schedule on its own line", func(t *testing.T) {
+		manager, _, _ := newFixture(t, start)
+		got, err := manager.parseReminder(sdk.Transmission{
+			Trigger: "remind",
+			Text:    "remind me\nWhat\n  About\n    Formatting\nin 2 minutes",
+			Sender:  testSender,
+		})
+		if err != nil {
+			t.Fatalf("parseReminder: %v", err)
+		}
+		if got.text != "What About Formatting" {
+			t.Errorf("text = %q, want %q", got.text, "What About Formatting")
+		}
+		if got.delay != 2*time.Minute {
+			t.Errorf("delay = %s, want 2m", got.delay)
+		}
+	})
+
+	t.Run("unit aliases and shortened counts", func(t *testing.T) {
+		manager, _, _ := newFixture(t, start)
+		for _, tc := range []struct {
+			text string
+			want time.Duration
+		}{
+			{"remind me stretch in 1 min", time.Minute},
+			{"remind me stretch in 2 mins", 2 * time.Minute},
+			{"remind me stretch in 3 h", 3 * time.Hour},
+			{"remind me stretch in 4 hrs", 4 * time.Hour},
+			{"remind me stretch in 5 d", 5 * 24 * time.Hour},
+		} {
+			got, err := manager.parseReminder(sdk.Transmission{
+				Trigger: "remind",
+				Text:    tc.text,
+				Sender:  testSender,
+			})
+			if err != nil {
+				t.Fatalf("parseReminder(%q): %v", tc.text, err)
+			}
+			if got.delay != tc.want {
+				t.Errorf("parseReminder(%q) delay = %s, want %s", tc.text, got.delay, tc.want)
+			}
+		}
+	})
+}
+
+func TestReminderRejectsPastTimesAsUserError(t *testing.T) {
+	start := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+	manager, _, _ := newFixture(t, start)
+
+	err := manager.HandleRemind(sdk.Transmission{
+		Trigger: "remind",
+		Text:    "remind me stretch at 2026-01-05 05:00",
+		Sender:  testSender,
+	})
+	if err == nil {
+		t.Fatal("HandleRemind accepted a past time")
+	}
+	message, ok := sdk.AsUserMessage(err)
+	if !ok || !strings.Contains(message, "past") {
+		t.Fatalf("error = %v, user message = %q (ok=%v)", err, message, ok)
+	}
+}
+
+func TestReminderValidationErrorsAreUserSafe(t *testing.T) {
+	start := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+	manager, _, _ := newFixture(t, start)
+
+	for _, text := range []string{
+		"remind me call bob in 10 fortnights",
+		"remind me call bob in -1 minutes",
+	} {
+		err := manager.HandleRemind(sdk.Transmission{
+			Trigger: "remind",
+			Text:    text,
+			Sender:  testSender,
+		})
+		if _, ok := sdk.AsUserMessage(err); !ok {
+			t.Errorf("HandleRemind(%q) error %v is not user-facing", text, err)
+		}
+	}
 }

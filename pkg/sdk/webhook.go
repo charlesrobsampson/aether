@@ -24,6 +24,10 @@ type Transmission struct {
 	Satellite string         `json:"satellite"`
 	ThreadID  string         `json:"thread_id,omitempty"`
 	MessageID string         `json:"message_id,omitempty"`
+	GroupID   string         `json:"group_id,omitempty"`
+	// TimestampMS is the provider timestamp of the inbound message. Reactions
+	// use it as the target, so zero means the provider did not supply one.
+	TimestampMS int64 `json:"timestamp_ms,omitempty"`
 }
 
 // SessionAction accompanies a Response that changes conversation state.

@@ -22,9 +22,10 @@ import (
 // recordingMessenger records deliveries and lets a test wait for one without
 // sleeping.
 type recordingMessenger struct {
-	mu    sync.Mutex
-	calls []transport.Call
-	sent  chan transport.Call
+	mu        sync.Mutex
+	calls     []transport.Call
+	reactions []transport.Reaction
+	sent      chan transport.Call
 }
 
 func newRecordingMessenger() *recordingMessenger {
@@ -44,6 +45,22 @@ func (m *recordingMessenger) Send(_ context.Context, recipient, text string) err
 }
 
 func (m *recordingMessenger) Name() string { return "recording" }
+
+func (m *recordingMessenger) React(_ context.Context, reaction transport.Reaction) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reactions = append(m.reactions, reaction)
+	return nil
+}
+
+// Reactions returns a copy of every recorded reaction.
+func (m *recordingMessenger) Reactions() []transport.Reaction {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]transport.Reaction, len(m.reactions))
+	copy(out, m.reactions)
+	return out
+}
 
 func (m *recordingMessenger) wait(t *testing.T) transport.Call {
 	t.Helper()
@@ -371,12 +388,12 @@ func TestBuiltinRoutes(t *testing.T) {
 	}()
 
 	// !config set is handled by configmgr and edits the sender's own file.
-	if got := postJSON(t, baseURL+"/receive", `{"sender":"+15555550102","text":"!config set timezone America/New_York"}`, nil); got != http.StatusAccepted {
+	if got := postJSON(t, baseURL+"/receive", `{"sender":"+15555550102","text":"!config set timezone America/New_York","timestamp_ms":1767614400000}`, nil); got != http.StatusAccepted {
 		t.Fatalf("!config /receive status = %d, want 202", got)
 	}
 
 	// !admin add is handled by adminmgr.
-	if got := postJSON(t, baseURL+"/receive", `{"sender":"+15555550101","text":"!admin add +15555550108"}`, nil); got != http.StatusAccepted {
+	if got := postJSON(t, baseURL+"/receive", `{"sender":"+15555550101","text":"!admin add +15555550108","timestamp_ms":1767614400001}`, nil); got != http.StatusAccepted {
 		t.Fatalf("!admin /receive status = %d, want 202", got)
 	}
 
@@ -388,6 +405,18 @@ func TestBuiltinRoutes(t *testing.T) {
 	}
 	if call := messenger.wait(t); call.Text != "test received" {
 		t.Fatalf("!test reply = %q, want test received", call.Text)
+	}
+	if reactions := messenger.Reactions(); len(reactions) != 2 {
+		t.Fatalf("reactions = %d, want 2 for !config and !admin", len(reactions))
+	} else {
+		for _, reaction := range reactions {
+			if reaction.Emoji != "👍" {
+				t.Errorf("reaction emoji = %q, want 👍", reaction.Emoji)
+			}
+			if reaction.TargetTimestampMS == 0 {
+				t.Errorf("reaction %+v has no target timestamp", reaction)
+			}
+		}
 	}
 
 	userRaw, err := os.ReadFile(filepath.Join(root, "users", "+15555550102.json"))
@@ -416,7 +445,7 @@ func TestBuiltinRoutes(t *testing.T) {
 
 	// !remind is handled by testsat and fires on the injected clock. A second
 	// !test reply proves the reminder timer was registered before we advance.
-	if got := postJSON(t, baseURL+"/receive", `{"sender":"+15555550102","text":"!remind me stretch in 1 minute"}`, nil); got != http.StatusAccepted {
+	if got := postJSON(t, baseURL+"/receive", `{"sender":"+15555550102","text":"!remind me stretch in 1 minute","timestamp_ms":1767614400002}`, nil); got != http.StatusAccepted {
 		t.Fatalf("!remind /receive status = %d, want 202", got)
 	}
 	if got := postJSON(t, baseURL+"/receive", `{"sender":"+15555550102","text":"!test"}`, nil); got != http.StatusAccepted {
@@ -428,6 +457,9 @@ func TestBuiltinRoutes(t *testing.T) {
 	clock.Advance(time.Minute)
 	if call := messenger.wait(t); call.Text != "stretch" {
 		t.Fatalf("!remind reply = %q, want stretch", call.Text)
+	}
+	if reactions := messenger.Reactions(); len(reactions) != 3 {
+		t.Fatalf("reactions = %d, want 3 including !remind", len(reactions))
 	}
 
 	mu.Lock()

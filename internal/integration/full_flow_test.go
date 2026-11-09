@@ -353,9 +353,10 @@ func testRootWithDB(t *testing.T) (string, string) {
 // recordingMessenger records deliveries and lets the test wait for one without
 // polling or sleeping.
 type recordingMessenger struct {
-	mu    sync.Mutex
-	calls []transport.Call
-	sent  chan transport.Call
+	mu        sync.Mutex
+	calls     []transport.Call
+	reactions []transport.Reaction
+	sent      chan transport.Call
 }
 
 func newRecordingMessenger() *recordingMessenger {
@@ -375,6 +376,13 @@ func (m *recordingMessenger) Send(_ context.Context, recipient, text string) err
 }
 
 func (m *recordingMessenger) Name() string { return "recording" }
+
+func (m *recordingMessenger) React(_ context.Context, reaction transport.Reaction) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reactions = append(m.reactions, reaction)
+	return nil
+}
 
 func (m *recordingMessenger) wait(t *testing.T) transport.Call {
 	t.Helper()
@@ -719,6 +727,8 @@ func (m *gatedMessenger) Send(ctx context.Context, recipient, text string) error
 
 func (m *gatedMessenger) Name() string { return "gated" }
 
+func (m *gatedMessenger) React(context.Context, transport.Reaction) error { return nil }
+
 func (m *gatedMessenger) snapshot() []transport.Call {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -848,6 +858,9 @@ type failingMessenger struct{ err error }
 
 func (m *failingMessenger) Send(context.Context, string, string) error { return m.err }
 func (m *failingMessenger) Name() string                               { return "failing" }
+func (m *failingMessenger) React(context.Context, transport.Reaction) error {
+	return m.err
+}
 
 // TestDeadLetterPersistsRouteLog proves app wiring turns an exhausted terminal
 // failure into exactly one outbound dead-letter audit row (plan §3.9, §3.19).

@@ -133,10 +133,28 @@ func (m *Manager) HandleRemind(t sdk.Transmission) error {
 	}
 	if reminder.absolute {
 		m.scheduler.At(reminder.at, fire)
+		// The reaction acknowledges every reminder; an absolute time also gets
+		// one short normalized line so the user can verify the instant.
+		if err := m.send(t, fmt.Sprintf("Reminder set for %s: %s",
+			m.formatReminderTime(reminder.at, t.Sender), reminder.text)); err != nil && m.onError != nil {
+			m.onError(err)
+		}
 	} else {
 		m.scheduler.After(reminder.delay, fire)
 	}
 	return nil
+}
+
+// formatReminderTime renders an absolute reminder in the sender's timezone. An
+// unknown zone falls back to UTC rather than hiding the acknowledgement.
+func (m *Manager) formatReminderTime(at time.Time, sender string) string {
+	loc := time.UTC
+	if timezone := strings.TrimSpace(m.timezone(sender)); timezone != "" {
+		if loaded, err := time.LoadLocation(timezone); err == nil {
+			loc = loaded
+		}
+	}
+	return at.In(loc).Format("Mon 2006-01-02 15:04 MST")
 }
 
 // reminder is a parsed reminder ready to hand to the scheduler.
@@ -175,7 +193,7 @@ func (m *Manager) parseArgs(t sdk.Transmission) (reminder, bool, error) {
 	}
 	unit, ok := t.Args["unit"]
 	if !ok {
-		return reminder{}, true, errors.New("testsat: reminder unit is required")
+		return reminder{}, true, sdk.Userf(`Reminder unit is required. Try "in 10 minutes".`)
 	}
 	delay, err := relativeDelay(num, fmt.Sprint(unit))
 	if err != nil {
@@ -188,10 +206,11 @@ func (m *Manager) parseArgs(t sdk.Transmission) (reminder, bool, error) {
 func (m *Manager) parseText(t sdk.Transmission) (reminder, error) {
 	text := strings.TrimSpace(t.Text)
 	if text == "" {
-		return reminder{}, errors.New(`testsat: expected "remind me <msg> in <num> <unit>" or "remind me <msg> at <datetime>"`)
+		return reminder{}, sdk.Userf(`Try "remind me <text> in <count> <unit>" or "remind me <text> at <datetime>".`)
 	}
 
 	text = stripTrigger(text, t.Trigger)
+	text = normalizeWhitespace(text)
 	text = stripMe(text)
 
 	if index := strings.LastIndex(text, " in "); index >= 0 {
@@ -208,17 +227,17 @@ func (m *Manager) parseText(t sdk.Transmission) (reminder, error) {
 		return m.absoluteReminder("", strings.TrimSpace(rest), t.Sender)
 	}
 
-	return reminder{}, fmt.Errorf("testsat: %q is not a reminder", t.Text)
+	return reminder{}, sdk.Userf(`I couldn't find a schedule in that. Try "remind me <text> in 10 minutes" or "remind me <text> at 2026-11-08 09:00".`)
 }
 
 func (m *Manager) relativeReminder(msg, spec string) (reminder, error) {
 	fields := strings.Fields(spec)
 	if len(fields) != 2 {
-		return reminder{}, fmt.Errorf("testsat: invalid relative reminder %q", spec)
+		return reminder{}, sdk.Userf(`Use "in <count> <unit>", for example "in 10 minutes".`)
 	}
 	num, err := strconv.Atoi(fields[0])
 	if err != nil {
-		return reminder{}, fmt.Errorf("testsat: invalid reminder count %q", fields[0])
+		return reminder{}, sdk.Userf("Reminder count %q is not a number.", fields[0])
 	}
 	delay, err := relativeDelay(num, fields[1])
 	if err != nil {
@@ -242,7 +261,7 @@ func (m *Manager) absoluteTime(value any, sender string) (time.Time, error) {
 	switch v := value.(type) {
 	case time.Time:
 		if v.IsZero() {
-			return time.Time{}, errors.New("testsat: reminder time is empty")
+			return time.Time{}, sdk.Userf("That reminder time is empty.")
 		}
 		return v.UTC(), nil
 	case string:
@@ -251,7 +270,7 @@ func (m *Manager) absoluteTime(value any, sender string) (time.Time, error) {
 		text = strings.TrimSpace(fmt.Sprint(v))
 	}
 	if text == "" {
-		return time.Time{}, errors.New("testsat: reminder time is empty")
+		return time.Time{}, sdk.Userf("That reminder time is empty.")
 	}
 
 	timezone := strings.TrimSpace(m.timezone(sender))
@@ -260,7 +279,10 @@ func (m *Manager) absoluteTime(value any, sender string) (time.Time, error) {
 	}
 	at, err := sdk.ToUTC(text, timezone, m.clock.Now())
 	if err != nil {
-		return time.Time{}, fmt.Errorf("testsat: %w", err)
+		return time.Time{}, sdk.Userf(`I couldn't parse the reminder time %q. Try "2026-11-08 09:00", "09:00", or "Monday 09:00".`, text)
+	}
+	if at.Before(m.clock.Now()) {
+		return time.Time{}, sdk.Userf("That time is in the past. Choose a future time.")
 	}
 	return at, nil
 }
@@ -269,25 +291,25 @@ func (m *Manager) absoluteTime(value any, sender string) (time.Time, error) {
 // are accepted; the count must be positive.
 func relativeDelay(num int, unit string) (time.Duration, error) {
 	if num <= 0 {
-		return 0, fmt.Errorf("testsat: reminder count must be positive, got %d", num)
+		return 0, sdk.Userf("Reminder count must be a positive number.")
 	}
 
 	var base time.Duration
 	switch strings.ToLower(strings.TrimSpace(unit)) {
-	case "second", "seconds":
+	case "second", "seconds", "sec", "secs", "s":
 		base = time.Second
-	case "minute", "minutes":
+	case "minute", "minutes", "min", "mins", "m":
 		base = time.Minute
-	case "hour", "hours":
+	case "hour", "hours", "hr", "hrs", "h":
 		base = time.Hour
-	case "day", "days":
+	case "day", "days", "d":
 		base = time.Hour * 24
 	default:
-		return 0, fmt.Errorf("testsat: unknown reminder unit %q", unit)
+		return 0, sdk.Userf("Unknown reminder unit %q. Use seconds, minutes, hours, or days (s, min, h, d).", unit)
 	}
 
 	if int64(num) > math.MaxInt64/int64(base) {
-		return 0, errors.New("testsat: reminder duration is too large")
+		return 0, sdk.Userf("That reminder is too far in the future.")
 	}
 	return time.Duration(num) * base, nil
 }
@@ -344,6 +366,13 @@ func stripMe(text string) string {
 		return strings.TrimSpace(rest)
 	}
 	return text
+}
+
+// normalizeWhitespace collapses newlines and runs of spaces into single
+// spaces. It makes a schedule that starts on its own line parse like one that
+// follows the message on the same line.
+func normalizeWhitespace(text string) string {
+	return strings.Join(strings.Fields(text), " ")
 }
 
 func argString(args map[string]any, name string) string {

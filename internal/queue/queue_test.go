@@ -217,6 +217,8 @@ func (m *blockingMessenger) Send(ctx context.Context, _, _ string) error {
 
 func (m *blockingMessenger) Name() string { return "blocking" }
 
+func (m *blockingMessenger) React(context.Context, transport.Reaction) error { return nil }
+
 // TestSendTimeout verifies that one send attempt is bounded by SendTimeout.
 func TestSendTimeout(t *testing.T) {
 	messenger := &blockingMessenger{
@@ -314,6 +316,8 @@ func (m *channelMessenger) Send(_ context.Context, recipient, text string) error
 }
 
 func (m *channelMessenger) Name() string { return "channel" }
+
+func (m *channelMessenger) React(context.Context, transport.Reaction) error { return nil }
 
 func newTestQueue(t *testing.T, opts Options) *Queue {
 	t.Helper()
@@ -423,6 +427,8 @@ func (m *scriptedMessenger) Calls() int {
 }
 
 func (m *scriptedMessenger) Name() string { return "scripted" }
+
+func (m *scriptedMessenger) React(context.Context, transport.Reaction) error { return nil }
 
 // deadLetterRecord is one OnDeadLetter observation.
 type deadLetterRecord struct {
@@ -920,4 +926,54 @@ func TestQueueMetrics(t *testing.T) {
 			t.Errorf("dead letters = %d, want 1", got)
 		}
 	})
+}
+
+// reactionMessenger records React calls so the queue's reaction path can be
+// tested without a provider.
+type reactionMessenger struct {
+	reactions chan transport.Reaction
+}
+
+func (m *reactionMessenger) Send(context.Context, string, string) error { return nil }
+func (m *reactionMessenger) React(_ context.Context, reaction transport.Reaction) error {
+	m.reactions <- reaction
+	return nil
+}
+func (m *reactionMessenger) Name() string { return "reaction" }
+
+func TestReactionJobUsesMessengerReact(t *testing.T) {
+	messenger := &reactionMessenger{reactions: make(chan transport.Reaction, 1)}
+	q, err := New(Options{
+		Depth:     4,
+		Workers:   1,
+		Messenger: messenger,
+		Clock:     testutil.NewFakeClock(time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = q.Shutdown(ctx)
+	})
+
+	want := transport.Reaction{
+		Recipient:         "+15555550102",
+		TargetAuthor:      "+15555550102",
+		TargetTimestampMS: 1767614400000,
+		Emoji:             "👍",
+	}
+	if err := q.Enqueue(Job{Reaction: &want, Provider: "fake"}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	select {
+	case got := <-messenger.reactions:
+		if got != want {
+			t.Fatalf("reaction = %#v, want %#v", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("React was not called")
+	}
 }

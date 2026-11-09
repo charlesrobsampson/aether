@@ -7,6 +7,9 @@ type Inbound struct {
 	Provider  string `json:"provider,omitempty"`
 	GroupID   string `json:"group_id,omitempty"`
 	MessageID string `json:"message_id,omitempty"`
+	// TimestampMS is the provider timestamp of the inbound message in
+	// milliseconds. It is the target of a reaction; zero means unavailable.
+	TimestampMS int64 `json:"timestamp_ms,omitempty"`
 }
 
 // Outbound represents a message to be sent.

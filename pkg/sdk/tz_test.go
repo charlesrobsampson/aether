@@ -25,6 +25,12 @@ func TestToUTC(t *testing.T) {
 			want:  time.Date(2026, 6, 15, 12, 30, 0, 0, time.UTC),
 		},
 		{
+			name:  "RFC3339-shaped offset without seconds",
+			value: "2026-06-15T07:30-05:00",
+			zone:  "America/Chicago",
+			want:  time.Date(2026, 6, 15, 12, 30, 0, 0, time.UTC),
+		},
+		{
 			name:  "RFC3339 with Z keeps the instant",
 			value: "2026-06-15T07:30:00Z",
 			zone:  "Europe/London",

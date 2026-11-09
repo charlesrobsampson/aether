@@ -1,0 +1,156 @@
+package helpsat
+
+import (
+	"context"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/charlesrobsampson/aether/internal/auth"
+	"github.com/charlesrobsampson/aether/internal/config"
+	"github.com/charlesrobsampson/aether/pkg/sdk"
+)
+
+const testSender = "+15555550102"
+
+type recordingSender struct {
+	mu        sync.Mutex
+	responses []sdk.Response
+}
+
+func (s *recordingSender) Send(_ context.Context, resp sdk.Response) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.responses = append(s.responses, resp)
+	return nil
+}
+
+func (s *recordingSender) last(t *testing.T) string {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.responses) != 1 {
+		t.Fatalf("responses = %d, want 1", len(s.responses))
+	}
+	return s.responses[0].Text
+}
+
+func testManager(t *testing.T, role auth.Role) (*Manager, *recordingSender) {
+	t.Helper()
+
+	cfg := &config.Config{}
+	cfg.System.Persona.Prefixes = []string{"!"}
+	cfg.Satellites = map[string]config.SatelliteConfig{
+		"weather": {
+			Name:        "weather",
+			Trigger:     "fly",
+			Description: "Aviation weather",
+			Commands: []config.CommandConfig{{
+				Name:     "fly",
+				Patterns: []string{"fly <station>"},
+			}},
+		},
+	}
+	switch role {
+	case auth.User:
+		cfg.Admin.ApprovedNumbers = []string{testSender}
+	case auth.Admin:
+		cfg.Admin.Admins = []string{testSender}
+	}
+	cfg.Users = map[string]config.UserConfig{
+		testSender: {Aliases: config.Aliases{Commands: map[string]string{"r": "remind"}}},
+	}
+
+	sender := &recordingSender{}
+	manager := New(Options{
+		Config: func() *config.Config { return cfg },
+		Client: sender,
+		Commands: []Entry{
+			{Name: "help", Trigger: "help", Usage: "help [command]", Description: "List available commands", Role: auth.User},
+			{Name: "test", Trigger: "test", Usage: "test", Description: "Check the connection", Role: auth.User},
+			{Name: "remind", Trigger: "remind", Usage: "remind me <text> in <count> <unit>", Description: "Set a reminder", Role: auth.User},
+			{Name: "admin", Trigger: "admin", Usage: "admin <approve|deny|list> ...", Description: "Manage users", Role: auth.Admin},
+		},
+	})
+	return manager, sender
+}
+
+func TestHelpListIsRoleAware(t *testing.T) {
+	t.Run("user sees user commands and satellites", func(t *testing.T) {
+		manager, sender := testManager(t, auth.User)
+		if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help"}); err != nil {
+			t.Fatalf("HandleHelp: %v", err)
+		}
+		got := sender.last(t)
+		for _, want := range []string{"!help", "!test", "!remind", "!fly"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("help list does not contain %q:\n%s", want, got)
+			}
+		}
+		if strings.Contains(got, "!admin") {
+			t.Errorf("help list leaked an admin command:\n%s", got)
+		}
+	})
+
+	t.Run("admin sees admin commands", func(t *testing.T) {
+		manager, sender := testManager(t, auth.Admin)
+		if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help"}); err != nil {
+			t.Fatalf("HandleHelp: %v", err)
+		}
+		if got := sender.last(t); !strings.Contains(got, "!admin") {
+			t.Errorf("help list lacks an admin command:\n%s", got)
+		}
+	})
+}
+
+func TestHelpDetail(t *testing.T) {
+	t.Run("satellite details include patterns", func(t *testing.T) {
+		manager, sender := testManager(t, auth.User)
+		if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help fly"}); err != nil {
+			t.Fatalf("HandleHelp: %v", err)
+		}
+		got := sender.last(t)
+		if !strings.Contains(got, "Aviation weather") || !strings.Contains(got, "fly <station>") {
+			t.Fatalf("detail = %q", got)
+		}
+	})
+
+	t.Run("alias resolves to the canonical command", func(t *testing.T) {
+		manager, sender := testManager(t, auth.User)
+		if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help r"}); err != nil {
+			t.Fatalf("HandleHelp: %v", err)
+		}
+		got := sender.last(t)
+		if !strings.Contains(got, "!remind me <text> in <count> <unit>") {
+			t.Fatalf("detail = %q", got)
+		}
+		if !strings.Contains(got, "Aliases: r") {
+			t.Fatalf("detail lacks the alias: %q", got)
+		}
+	})
+
+	t.Run("unknown topic suggests a close match", func(t *testing.T) {
+		manager, sender := testManager(t, auth.User)
+		if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help rem"}); err != nil {
+			t.Fatalf("HandleHelp: %v", err)
+		}
+		got := sender.last(t)
+		if !strings.Contains(got, "Did you mean") || !strings.Contains(got, "remind") {
+			t.Fatalf("reply = %q", got)
+		}
+	})
+}
+
+func TestHelpCapsOutput(t *testing.T) {
+	manager, sender := testManager(t, auth.User)
+	manager.commands = append(manager.commands, Entry{
+		Name: "verbose", Trigger: "verbose", Usage: "verbose", Role: auth.User,
+		Details: []string{strings.Repeat("x", 4000)},
+	})
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help verbose"}); err != nil {
+		t.Fatalf("HandleHelp: %v", err)
+	}
+	if got := []rune(sender.last(t)); len(got) > maxReplyChars {
+		t.Fatalf("help reply length = %d, want <= %d", len(got), maxReplyChars)
+	}
+}

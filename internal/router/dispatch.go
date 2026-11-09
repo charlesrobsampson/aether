@@ -30,14 +30,16 @@ type dispatchStartKey struct{}
 // Args carries the converted, typed values; the metadata fields let the
 // satellite reply to the right user and thread.
 type transmission struct {
-	Command   string         `json:"command"`
-	Trigger   string         `json:"trigger"`
-	Args      map[string]any `json:"args"`
-	Text      string         `json:"text"`
-	Sender    string         `json:"sender"`
-	Satellite string         `json:"satellite"`
-	ThreadID  string         `json:"thread_id,omitempty"`
-	MessageID string         `json:"message_id,omitempty"`
+	Command     string         `json:"command"`
+	Trigger     string         `json:"trigger"`
+	Args        map[string]any `json:"args"`
+	Text        string         `json:"text"`
+	Sender      string         `json:"sender"`
+	Satellite   string         `json:"satellite"`
+	ThreadID    string         `json:"thread_id,omitempty"`
+	MessageID   string         `json:"message_id,omitempty"`
+	GroupID     string         `json:"group_id,omitempty"`
+	TimestampMS int64          `json:"timestamp_ms,omitempty"`
 }
 
 // Dispatch routes one accepted inbound message. Every outcome is written to
@@ -68,6 +70,7 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 	}
 
 	user := cfg.Users[in.Sender]
+	prefix, prefixed := matchedPrefix(in.Text, cfg.System.Persona.Prefixes, user.Prefixes)
 	text := stripPrefixes(in.Text, cfg.System.Persona.Prefixes, user.Prefixes)
 	if text == "" {
 		r.record(ctx, store.RouteLog{
@@ -103,6 +106,14 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 			Status:    "dropped",
 			Error:     "unknown trigger",
 		})
+		if prefixed {
+			fields := strings.Fields(text)
+			name := ""
+			if len(fields) > 0 {
+				name = fields[0]
+			}
+			r.replyUser(ctx, in, unknownCommandReply(prefix, name))
+		}
 		return
 	}
 
@@ -123,7 +134,7 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 
 	// Patterns include the trigger, so the canonical text (aliases resolved)
 	// is what MatchCommand sees. Declaration order wins (plan §3.6).
-	if r.dispatchRoute(ctx, in, route, loc, canonical, canonical, "") {
+	if r.dispatchRoute(ctx, in, route, loc, canonical, canonical, "", prefixed, prefix) {
 		return
 	}
 
@@ -136,6 +147,9 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 		Status:    "dropped",
 		Error:     "no matching command",
 	})
+	if prefixed {
+		r.replyUser(ctx, in, fmt.Sprintf("No matching command. Send %q for usage.", prefix+"help "+route.Trigger))
+	}
 }
 
 // resolveBuiltin returns the internal handler whose trigger is the first token
@@ -157,9 +171,10 @@ func (r *Router) resolveBuiltin(text string) (Builtin, bool) {
 	return Builtin{}, false
 }
 
-// dispatchBuiltin runs one internal command and records its outcome. Built-in
-// handlers answer through the outbound queue directly; a failure is audited and
-// never returned to the transport.
+// dispatchBuiltin runs one internal command and records its outcome. On
+// success a configured reaction acknowledges the command; on failure a
+// user-correctable error is sent back and anything else becomes a generic
+// reply, while the full error stays in the route log.
 func (r *Router) dispatchBuiltin(ctx context.Context, in model.Inbound, builtin Builtin, text string) {
 	record := store.RouteLog{
 		Direction: "inbound",
@@ -174,21 +189,68 @@ func (r *Router) dispatchBuiltin(ctx context.Context, in model.Inbound, builtin 
 		record.Error = "built-in handler is not configured"
 		r.observeFailure(metrics.DispatchReasonBuiltin)
 		r.record(ctx, record)
+		r.replyUser(ctx, in, "That command is not available right now.")
 		return
 	}
 	if err := builtin.Handle(ctx, in, text); err != nil {
 		record.Status = "failed"
 		record.Error = err.Error()
 		r.observeFailure(metrics.DispatchReasonBuiltin)
+		r.record(ctx, record)
+		if message, ok := sdk.AsUserMessage(err); ok {
+			r.replyUser(ctx, in, message)
+		} else {
+			r.replyUser(ctx, in, "Something went wrong. Send \"!help\" for available commands.")
+		}
+		return
+	}
+
+	if builtin.SuccessReaction != "" {
+		if err := r.reactTo(ctx, in, builtin.SuccessReaction); err != nil {
+			log.Printf("router: reaction for %s failed: %v", builtin.Satellite, err)
+			if builtin.SuccessText != "" {
+				r.replyUser(ctx, in, builtin.SuccessText)
+			}
+		}
 	}
 	r.record(ctx, record)
+}
+
+// replyUser sends one best-effort text reply. Failures are logged rather than
+// changing the dispatch outcome, so a provider outage cannot turn a handled
+// command into a redelivery loop.
+func (r *Router) replyUser(ctx context.Context, in model.Inbound, text string) {
+	if r == nil || r.reply == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	if err := r.reply(ctx, in, text); err != nil {
+		log.Printf("router: reply to %s failed: %v", in.Sender, err)
+	}
+}
+
+// reactTo is replyUser for reactions: best effort, never fatal.
+func (r *Router) reactTo(ctx context.Context, in model.Inbound, emoji string) error {
+	if r == nil || r.react == nil {
+		return errors.New("router: reactions are not configured")
+	}
+	return r.react(ctx, in, emoji)
+}
+
+// unknownCommandReply is the short hint sent for an unrecognized prefixed
+// command. Plain chat is never answered.
+func unknownCommandReply(prefix, name string) string {
+	hint := strings.TrimSpace(prefix + "help")
+	if name != "" {
+		return fmt.Sprintf("Unknown command %q. Send %q for available commands.", name, hint)
+	}
+	return fmt.Sprintf("Unknown command. Send %q for available commands.", hint)
 }
 
 // dispatchRoute posts the first command in route whose pattern matches
 // matchText. envelopeText is what the satellite sees as text, and threadID is
 // carried through when non-empty. It reports whether a command matched, whether
 // or not the POST succeeded; the caller records a drop when nothing matched.
-func (r *Router) dispatchRoute(ctx context.Context, in model.Inbound, route config.RouteEntry, loc *time.Location, matchText, envelopeText, threadID string) bool {
+func (r *Router) dispatchRoute(ctx context.Context, in model.Inbound, route config.RouteEntry, loc *time.Location, matchText, envelopeText, threadID string, prefixed bool, prefix string) bool {
 	for _, command := range route.Commands {
 		spec := commandSpec(command)
 		raw, matched := sdk.MatchCommand(matchText, spec)
@@ -209,18 +271,23 @@ func (r *Router) dispatchRoute(ctx context.Context, in model.Inbound, route conf
 				Status:    "failed",
 				Error:     err.Error(),
 			})
+			if prefixed {
+				r.replyUser(ctx, in, fmt.Sprintf("Could not parse that command. Send %q for usage.", prefix+"help "+route.Trigger))
+			}
 			return true
 		}
 
 		envelope := transmission{
-			Command:   command.Name,
-			Trigger:   route.Trigger,
-			Args:      args,
-			Text:      envelopeText,
-			Sender:    in.Sender,
-			Satellite: route.Satellite,
-			ThreadID:  threadID,
-			MessageID: in.MessageID,
+			Command:     command.Name,
+			Trigger:     route.Trigger,
+			Args:        args,
+			Text:        envelopeText,
+			Sender:      in.Sender,
+			Satellite:   route.Satellite,
+			ThreadID:    threadID,
+			MessageID:   in.MessageID,
+			GroupID:     in.GroupID,
+			TimestampMS: in.TimestampMS,
 		}
 		if err := r.post(ctx, route.Endpoint, command.Path, envelope); err != nil {
 			r.observeFailure(dispatchFailureReason(err))
@@ -301,7 +368,7 @@ func (r *Router) dispatchSession(ctx context.Context, cfg *config.Config, in mod
 		return
 	}
 
-	if r.dispatchRoute(ctx, in, route, loc, reply, reply, sess.ThreadID) {
+	if r.dispatchRoute(ctx, in, route, loc, reply, reply, sess.ThreadID, false, "") {
 		return
 	}
 
@@ -541,6 +608,21 @@ func routesFromConfig(cfg *config.Config) []config.RouteEntry {
 		})
 	}
 	return routes
+}
+
+// matchedPrefix reports the configured prefix that text starts with, if any.
+// It mirrors stripPrefixes' ordering so the returned prefix is the one that
+// was removed.
+func matchedPrefix(text string, groups ...[]string) (string, bool) {
+	text = strings.TrimSpace(text)
+	for _, prefixes := range groups {
+		for _, prefix := range prefixes {
+			if prefix != "" && strings.HasPrefix(text, prefix) {
+				return prefix, true
+			}
+		}
+	}
+	return "", false
 }
 
 // stripPrefixes removes any configured prefix from the front of text. Prefixes

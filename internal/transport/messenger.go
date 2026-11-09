@@ -15,13 +15,34 @@ import (
 	"time"
 )
 
-// Messenger delivers a text message to a single recipient.
+// ErrReactionsUnsupported is returned by a Messenger whose provider cannot
+// attach reactions to existing messages. Callers may fall back to a text
+// acknowledgement.
+var ErrReactionsUnsupported = errors.New("transport: provider does not support reactions")
+
+// Reaction targets one existing inbound message.
+//
+// Recipient is the conversation that holds the message (a phone number for a
+// direct chat, a group ID for a group). TargetAuthor and TargetTimestampMS
+// identify the specific message and come from the inbound envelope.
+type Reaction struct {
+	Recipient         string
+	TargetAuthor      string
+	TargetTimestampMS int64
+	Emoji             string
+	Remove            bool
+}
+
+// Messenger delivers a text message to a single recipient, and can optionally
+// attach a reaction to an existing message.
 //
 // Recipient is either a phone number or a provider-specific conversation ID.
 // Send must return an error when delivery fails; callers treat a nil error as a
-// confirmed hand-off to the provider.
+// confirmed hand-off to the provider. React returns ErrReactionsUnsupported
+// when the provider has no reaction support.
 type Messenger interface {
 	Send(ctx context.Context, recipient, text string) error
+	React(ctx context.Context, reaction Reaction) error
 	Name() string
 }
 
@@ -96,12 +117,19 @@ type Call struct {
 	Text      string
 }
 
+// ReactionCall records one Fake.React attempt.
+type ReactionCall struct {
+	Reaction Reaction
+}
+
 // Fake is an in-memory Messenger that records every Send and can be told to
 // fail. It is safe for concurrent use.
 type Fake struct {
-	mu    sync.Mutex
-	calls []Call
-	err   error
+	mu            sync.Mutex
+	calls         []Call
+	reactionCalls []ReactionCall
+	err           error
+	reactionErr   error
 }
 
 // NewFake returns an empty Fake.
@@ -116,6 +144,15 @@ func (f *Fake) Send(_ context.Context, recipient, text string) error {
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, Call{Recipient: recipient, Text: text})
 	return f.err
+}
+
+// React records the attempt and returns the error most recently installed by
+// FailReactionsWith.
+func (f *Fake) React(_ context.Context, reaction Reaction) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reactionCalls = append(f.reactionCalls, ReactionCall{Reaction: reaction})
+	return f.reactionErr
 }
 
 // Name identifies the fake provider.
@@ -133,10 +170,27 @@ func (f *Fake) Calls() []Call {
 	return out
 }
 
+// ReactionCalls returns a copy of every recorded React, in invocation order.
+func (f *Fake) ReactionCalls() []ReactionCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]ReactionCall, len(f.reactionCalls))
+	copy(out, f.reactionCalls)
+	return out
+}
+
 // FailWith makes subsequent Send calls return err. Passing nil clears the
 // failure and restores successful sends.
 func (f *Fake) FailWith(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.err = err
+}
+
+// FailReactionsWith makes subsequent React calls return err. Passing nil
+// clears the failure and restores successful reactions.
+func (f *Fake) FailReactionsWith(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reactionErr = err
 }

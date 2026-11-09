@@ -69,5 +69,33 @@ func (m *msgAdapter) Send(ctx context.Context, recipient, text string) error {
 	return err
 }
 
+// React forwards a reaction to the wrapped msg messenger and normalizes the
+// provider's unsupported-reaction sentinel so callers can fall back to text
+// without importing msg.
+func (m *msgAdapter) React(ctx context.Context, reaction Reaction) error {
+	err := m.inner.React(ctx, msgclient.ReactionRequest{
+		Recipient:         reaction.Recipient,
+		TargetAuthor:      reaction.TargetAuthor,
+		TargetTimestampMS: reaction.TargetTimestampMS,
+		Emoji:             reaction.Emoji,
+		Remove:            reaction.Remove,
+	})
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, msgclient.ErrReactionsUnsupported) {
+		return ErrReactionsUnsupported
+	}
+	var statusErr *msgclient.StatusError
+	if errors.As(err, &statusErr) {
+		return &SendError{
+			StatusCode: statusErr.StatusCode,
+			RetryAfter: statusErr.RetryAfter,
+			Err:        err,
+		}
+	}
+	return err
+}
+
 // Name reports the underlying msg provider name.
 func (m *msgAdapter) Name() string { return m.inner.Name() }

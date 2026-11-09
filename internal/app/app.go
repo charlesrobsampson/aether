@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/charlesrobsampson/aether/internal/api"
+	"github.com/charlesrobsampson/aether/internal/auth"
 	"github.com/charlesrobsampson/aether/internal/config"
 	"github.com/charlesrobsampson/aether/internal/dispatch"
 	"github.com/charlesrobsampson/aether/internal/metrics"
@@ -29,6 +30,7 @@ import (
 	"github.com/charlesrobsampson/aether/internal/router"
 	"github.com/charlesrobsampson/aether/internal/satellite/adminmgr"
 	"github.com/charlesrobsampson/aether/internal/satellite/configmgr"
+	"github.com/charlesrobsampson/aether/internal/satellite/helpsat"
 	"github.com/charlesrobsampson/aether/internal/satellite/testsat"
 	"github.com/charlesrobsampson/aether/internal/scheduler"
 	"github.com/charlesrobsampson/aether/internal/session"
@@ -191,11 +193,12 @@ func Run(ctx context.Context, opts Options) error {
 		Config: snapshot.Load,
 		Store:  st,
 	})
+	sender := &queueSender{
+		queue:    q,
+		provider: initial.System.DefaultProvider,
+	}
 	testManager := testsat.New(testsat.Options{
-		Client: &queueSender{
-			queue:    q,
-			provider: initial.System.DefaultProvider,
-		},
+		Client:    sender,
 		Scheduler: sched,
 		Clock:     clock,
 		Timezone: func(phone string) string {
@@ -206,12 +209,19 @@ func Run(ctx context.Context, opts Options) error {
 			return cfg.Users[phone].Timezone
 		},
 	})
+	helpManager := helpsat.New(helpsat.Options{
+		Config:   snapshot.Load,
+		Client:   sender,
+		Commands: helpCommands(),
+	})
 
 	rt := router.New(router.Options{
 		Config:   snapshot.Load,
 		Store:    st,
 		Sessions: sessions,
-		Builtins: builtins(configManager, adminManager, testManager),
+		Builtins: builtins(configManager, adminManager, testManager, helpManager),
+		Reply:    sender.Reply,
+		React:    sender.React,
 	})
 
 	// Inbound dispatch is asynchronous: /receive enqueues and returns 202, and
@@ -425,28 +435,89 @@ func newMessenger(cfg *config.Config) (transport.Messenger, error) {
 
 // builtins returns the internal command handlers in precedence order. They run
 // before any file-registered satellite with the same trigger (plan §3.6).
-func builtins(configManager *configmgr.Manager, adminManager *adminmgr.Manager, testManager *testsat.Manager) []router.Builtin {
-	wrap := func(satellite, trigger string, run func(sdk.Transmission) error) router.Builtin {
+func builtins(configManager *configmgr.Manager, adminManager *adminmgr.Manager, testManager *testsat.Manager, helpManager *helpsat.Manager) []router.Builtin {
+	wrap := func(satellite, trigger, reaction, fallback string, run func(sdk.Transmission) error) router.Builtin {
 		return router.Builtin{
-			Satellite: satellite,
-			Trigger:   trigger,
+			Satellite:       satellite,
+			Trigger:         trigger,
+			SuccessReaction: reaction,
+			SuccessText:     fallback,
 			Handle: func(_ context.Context, in model.Inbound, text string) error {
 				return run(sdk.Transmission{
-					Command:   trigger,
-					Trigger:   trigger,
-					Text:      text,
-					Sender:    in.Sender,
-					Satellite: satellite,
+					Command:     trigger,
+					Trigger:     trigger,
+					Text:        text,
+					Sender:      in.Sender,
+					Satellite:   satellite,
+					MessageID:   in.MessageID,
+					GroupID:     in.GroupID,
+					TimestampMS: in.TimestampMS,
 				})
 			},
 		}
 	}
 
 	return []router.Builtin{
-		wrap("config", "config", configManager.HandlePatch),
-		wrap("admin", "admin", adminManager.HandleAdmin),
-		wrap("remind", "remind", testManager.HandleRemind),
-		wrap("test", "test", testManager.HandleTest),
+		wrap("config", "config", "👍", "Configuration updated.", configManager.HandlePatch),
+		wrap("admin", "admin", "👍", "Done.", adminManager.HandleAdmin),
+		wrap("remind", "remind", "👍", "Reminder set.", testManager.HandleRemind),
+		wrap("test", "test", "", "", testManager.HandleTest),
+		wrap("help", "help", "", "", helpManager.HandleHelp),
+	}
+}
+
+// helpCommands describes the built-ins for !help. Satellite entries are added
+// by the help manager from live configuration.
+func helpCommands() []helpsat.Entry {
+	return []helpsat.Entry{
+		{
+			Name:        "help",
+			Trigger:     "help",
+			Usage:       "help [command]",
+			Description: "List available commands",
+			Role:        auth.User,
+			Details:     []string{`Send "help <command>" to expand one command.`},
+		},
+		{
+			Name:        "test",
+			Trigger:     "test",
+			Usage:       "test",
+			Description: "Check the connection",
+			Role:        auth.User,
+			Details:     []string{`Replies with "test received".`},
+		},
+		{
+			Name:        "remind",
+			Trigger:     "remind",
+			Usage:       "remind me <text> in <count> <unit>",
+			Description: "Set a reminder",
+			Role:        auth.User,
+			Details: []string{
+				"Absolute form: remind me <text> at <datetime>",
+				"Units: seconds, minutes, hours, days (s, min, h, d).",
+				"Times: 2026-11-08 09:00, 09:00, Monday 09:00, or RFC3339.",
+				"Times use your configured timezone; past times are rejected.",
+			},
+		},
+		{
+			Name:        "config",
+			Trigger:     "config",
+			Usage:       "config set <key> <value>",
+			Description: "Change your settings",
+			Role:        auth.User,
+			Details: []string{
+				"Keys: timezone, prefixes, muted, aliases.",
+				"Admins can target another user with @<phone>.",
+			},
+		},
+		{
+			Name:        "admin",
+			Trigger:     "admin",
+			Usage:       "admin <approve|deny|list|add|remove> ...",
+			Description: "Manage users and approvals",
+			Role:        auth.Admin,
+			Details:     []string{"Maintainers can list and resolve pending approvals."},
+		},
 	}
 }
 
@@ -480,4 +551,52 @@ func (s *queueSender) Send(_ context.Context, resp sdk.Response) error {
 		}
 	}
 	return nil
+}
+
+// Reply sends a plain text answer to the conversation the inbound message came
+// from. Groups answer in the group; direct chats answer the sender.
+func (s *queueSender) Reply(_ context.Context, in model.Inbound, text string) error {
+	if s == nil || s.queue == nil {
+		return errors.New("app: outbound queue is not configured")
+	}
+	recipient := strings.TrimSpace(in.GroupID)
+	if recipient == "" {
+		recipient = strings.TrimSpace(in.Sender)
+	}
+	if recipient == "" || strings.TrimSpace(text) == "" {
+		return nil
+	}
+	return s.queue.Enqueue(queue.Job{
+		Recipient: recipient,
+		Text:      text,
+		Provider:  s.provider,
+	})
+}
+
+// React attaches an emoji reaction to the inbound message. A missing provider
+// timestamp means the reaction cannot target anything, so it reports an error
+// and the router falls back to text.
+func (s *queueSender) React(_ context.Context, in model.Inbound, emoji string) error {
+	if s == nil || s.queue == nil {
+		return errors.New("app: outbound queue is not configured")
+	}
+	recipient := strings.TrimSpace(in.GroupID)
+	if recipient == "" {
+		recipient = strings.TrimSpace(in.Sender)
+	}
+	if recipient == "" {
+		return errors.New("app: reaction recipient is unavailable")
+	}
+	if in.TimestampMS == 0 {
+		return errors.New("app: inbound message has no timestamp for a reaction")
+	}
+	return s.queue.Enqueue(queue.Job{
+		Reaction: &transport.Reaction{
+			Recipient:         recipient,
+			TargetAuthor:      in.Sender,
+			TargetTimestampMS: in.TimestampMS,
+			Emoji:             emoji,
+		},
+		Provider: s.provider,
+	})
 }

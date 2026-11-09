@@ -37,7 +37,21 @@ type Builtin struct {
 	Trigger string
 	// Handle runs the command.
 	Handle func(context.Context, model.Inbound, string) error
+	// SuccessReaction, when set, is attached to the inbound message after a
+	// successful command instead of sending a text acknowledgement.
+	SuccessReaction string
+	// SuccessText is the fallback acknowledgement sent when SuccessReaction is
+	// set but the provider cannot attach reactions.
+	SuccessText string
 }
+
+// Replier sends a text reply back to the conversation an inbound message came
+// from. It is used for safe, user-correctable errors and help output.
+type Replier func(ctx context.Context, in model.Inbound, text string) error
+
+// Reactor attaches an emoji reaction to an inbound message. Providers that do
+// not support reactions return transport.ErrReactionsUnsupported.
+type Reactor func(ctx context.Context, in model.Inbound, emoji string) error
 
 // Options configures a Router. Every field is optional so New() remains usable
 // as an inert value in scaffold tests.
@@ -56,6 +70,11 @@ type Options struct {
 	// Builtins are internal command handlers, checked in order before any
 	// file-registered route.
 	Builtins []Builtin
+	// Reply sends safe user-facing errors and help output back to the sender.
+	// Nil disables user replies.
+	Reply Replier
+	// React attaches success reactions. Nil disables reactions.
+	React Reactor
 	// Metrics receives dispatch latency and failure counters. Nil selects the
 	// process-wide default registry.
 	Metrics *metrics.Registry
@@ -68,6 +87,8 @@ type Router struct {
 	client   *http.Client
 	sessions *session.Store
 	builtins []Builtin
+	reply    Replier
+	react    Reactor
 	metrics  *metrics.Registry
 }
 
@@ -87,6 +108,8 @@ func New(options ...Options) *Router {
 	r.store = option.Store
 	r.sessions = option.Sessions
 	r.builtins = option.Builtins
+	r.reply = option.Reply
+	r.react = option.React
 	if option.Client != nil {
 		r.client = option.Client
 	}

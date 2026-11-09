@@ -14,9 +14,11 @@ import (
 // fakeMsgMessenger stands in for msg/client.Messenger so the adapter test never
 // touches a provider, the network, or $HOME.
 type fakeMsgMessenger struct {
-	name  string
-	calls []fakeMsgCall
-	err   error
+	name        string
+	calls       []fakeMsgCall
+	reactions   []msgclient.ReactionRequest
+	err         error
+	reactionErr error
 }
 
 type fakeMsgCall struct {
@@ -28,6 +30,11 @@ type fakeMsgCall struct {
 func (f *fakeMsgMessenger) Send(ctx context.Context, recipient, text string) error {
 	f.calls = append(f.calls, fakeMsgCall{ctx: ctx, recipient: recipient, text: text})
 	return f.err
+}
+
+func (f *fakeMsgMessenger) React(_ context.Context, reaction msgclient.ReactionRequest) error {
+	f.reactions = append(f.reactions, reaction)
+	return f.reactionErr
 }
 
 func (f *fakeMsgMessenger) Name() string { return f.name }
@@ -168,4 +175,57 @@ func TestStatusErrorMapping(t *testing.T) {
 	if !errors.Is(err, providerErr) {
 		t.Errorf("Send() error does not unwrap to the provider error")
 	}
+}
+
+func TestMsgAdapterReact(t *testing.T) {
+	t.Run("forwards the reaction", func(t *testing.T) {
+		fake := &fakeMsgMessenger{name: "signal"}
+		adapter, err := newMsgAdapter(fake)
+		if err != nil {
+			t.Fatalf("newMsgAdapter() error = %v", err)
+		}
+		err = adapter.React(context.Background(), Reaction{
+			Recipient:         "group.abc",
+			TargetAuthor:      "uuid-author",
+			TargetTimestampMS: 1794150453095,
+			Emoji:             "👍",
+		})
+		if err != nil {
+			t.Fatalf("React() error = %v", err)
+		}
+		want := msgclient.ReactionRequest{
+			Recipient:         "group.abc",
+			TargetAuthor:      "uuid-author",
+			TargetTimestampMS: 1794150453095,
+			Emoji:             "👍",
+		}
+		if len(fake.reactions) != 1 || fake.reactions[0] != want {
+			t.Fatalf("reactions = %#v, want [%#v]", fake.reactions, want)
+		}
+	})
+
+	t.Run("normalizes unsupported reactions", func(t *testing.T) {
+		fake := &fakeMsgMessenger{name: "sms", reactionErr: msgclient.ErrReactionsUnsupported}
+		adapter, err := newMsgAdapter(fake)
+		if err != nil {
+			t.Fatalf("newMsgAdapter() error = %v", err)
+		}
+		err = adapter.React(context.Background(), Reaction{Recipient: "+1", TargetTimestampMS: 1, Emoji: "👍"})
+		if !errors.Is(err, ErrReactionsUnsupported) {
+			t.Fatalf("React() error = %v, want ErrReactionsUnsupported", err)
+		}
+	})
+
+	t.Run("maps provider status", func(t *testing.T) {
+		fake := &fakeMsgMessenger{name: "signal", reactionErr: &msgclient.StatusError{StatusCode: 429}}
+		adapter, err := newMsgAdapter(fake)
+		if err != nil {
+			t.Fatalf("newMsgAdapter() error = %v", err)
+		}
+		err = adapter.React(context.Background(), Reaction{Recipient: "+1", TargetTimestampMS: 1, Emoji: "👍"})
+		var sendErr *SendError
+		if !errors.As(err, &sendErr) || sendErr.StatusCode != 429 {
+			t.Fatalf("React() error = %v, want SendError 429", err)
+		}
+	})
 }
