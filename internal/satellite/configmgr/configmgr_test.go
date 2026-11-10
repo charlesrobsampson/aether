@@ -586,3 +586,306 @@ func queryPatches(t *testing.T, st *store.Store) []patchRow {
 	}
 	return out
 }
+
+// recordingSender captures read-only replies so tests can assert the exact
+// text a sender would receive.
+type recordingSender struct {
+	responses []sdk.Response
+}
+
+func (s *recordingSender) Send(_ context.Context, resp sdk.Response) error {
+	s.responses = append(s.responses, resp)
+	return nil
+}
+
+func (s *recordingSender) last(t *testing.T) string {
+	t.Helper()
+	if len(s.responses) != 1 {
+		t.Fatalf("responses = %d, want 1", len(s.responses))
+	}
+	return s.responses[0].Text
+}
+
+func readManager(t *testing.T, cfg *config.Config) (*Manager, *recordingSender) {
+	t.Helper()
+	recorder := &recordingSender{}
+	return New(Options{
+		Config: func() *config.Config { return cfg },
+		Out:    recorder,
+	}), recorder
+}
+
+func TestConfigList(t *testing.T) {
+	const otherPhone = "+15555550103"
+
+	t.Run("self shows values and defaults", func(t *testing.T) {
+		_, cfg, _ := newTestConfig(t)
+		manager, recorder := readManager(t, cfg)
+
+		if err := manager.Handle(sdk.Transmission{
+			Trigger: "config",
+			Text:    "config list",
+			Sender:  userPhone,
+		}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+
+		want := strings.Join([]string{
+			"timezone = America/Chicago",
+			"prefixes = !",
+			"muted = false (default)",
+			"aliases.satellites.wind = wind-predictor",
+			"aliases.commands.w = fly",
+			`Send "!config get <key>" for one setting.`,
+		}, "\n")
+		if got := recorder.last(t); got != want {
+			t.Fatalf("list =\n%s\nwant:\n%s", got, want)
+		}
+	})
+
+	t.Run("bare config lists defaults", func(t *testing.T) {
+		_, cfg, _ := newTestConfig(t)
+		manager, recorder := readManager(t, cfg)
+
+		if err := manager.Handle(sdk.Transmission{
+			Trigger: "config",
+			Text:    "config",
+			Sender:  userPhone,
+		}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+		if got := recorder.last(t); !strings.Contains(got, "timezone = America/Chicago") {
+			t.Fatalf("bare config did not list settings: %q", got)
+		}
+	})
+
+	t.Run("admin sees another user's effective defaults", func(t *testing.T) {
+		_, cfg, _ := newTestConfig(t)
+		manager, recorder := readManager(t, cfg)
+
+		if err := manager.Handle(sdk.Transmission{
+			Trigger: "config",
+			Text:    "config list @" + otherPhone,
+			Sender:  adminPhone,
+		}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+
+		want := strings.Join([]string{
+			"Settings for " + otherPhone + ":",
+			"timezone = UTC (default)",
+			"prefixes = ! (default)",
+			"muted = false (default)",
+			"aliases = (none)",
+			`Send "!config get @` + otherPhone + ` <key>" for one setting.`,
+		}, "\n")
+		if got := recorder.last(t); got != want {
+			t.Fatalf("list =\n%s\nwant:\n%s", got, want)
+		}
+	})
+
+	t.Run("user cannot view another user", func(t *testing.T) {
+		_, cfg, _ := newTestConfig(t)
+		manager, _ := readManager(t, cfg)
+
+		err := manager.Handle(sdk.Transmission{
+			Trigger: "config",
+			Text:    "config list @" + adminPhone,
+			Sender:  userPhone,
+		})
+		requireStatus(t, err, http.StatusForbidden)
+	})
+}
+
+func TestConfigGet(t *testing.T) {
+	t.Run("exact key includes a pasteable set line", func(t *testing.T) {
+		_, cfg, _ := newTestConfig(t)
+		manager, recorder := readManager(t, cfg)
+
+		if err := manager.Handle(sdk.Transmission{
+			Trigger: "config",
+			Text:    "config get timezone",
+			Sender:  userPhone,
+		}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+
+		want := strings.Join([]string{
+			"timezone = America/Chicago",
+			"Set with: !config set timezone America/Chicago",
+		}, "\n")
+		if got := recorder.last(t); got != want {
+			t.Fatalf("get =\n%s\nwant:\n%s", got, want)
+		}
+	})
+
+	t.Run("default value is marked", func(t *testing.T) {
+		const otherPhone = "+15555550103"
+		_, cfg, _ := newTestConfig(t)
+		manager, recorder := readManager(t, cfg)
+
+		if err := manager.Handle(sdk.Transmission{
+			Trigger: "config",
+			Text:    "config get @" + otherPhone + " muted",
+			Sender:  adminPhone,
+		}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+
+		want := strings.Join([]string{
+			"muted = false (default)",
+			"Set with: !config set @" + otherPhone + " muted false",
+		}, "\n")
+		if got := recorder.last(t); got != want {
+			t.Fatalf("get =\n%s\nwant:\n%s", got, want)
+		}
+	})
+
+	t.Run("alias group matches every alias", func(t *testing.T) {
+		_, cfg, _ := newTestConfig(t)
+		manager, recorder := readManager(t, cfg)
+
+		if err := manager.Handle(sdk.Transmission{
+			Trigger: "config",
+			Text:    "config get aliases.satellites",
+			Sender:  userPhone,
+		}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+
+		want := strings.Join([]string{
+			"aliases.satellites.wind = wind-predictor",
+			"Set with: !config set aliases.satellites.wind wind-predictor",
+		}, "\n")
+		if got := recorder.last(t); got != want {
+			t.Fatalf("get =\n%s\nwant:\n%s", got, want)
+		}
+	})
+
+	t.Run("empty alias group is explicit", func(t *testing.T) {
+		const otherPhone = "+15555550103"
+		_, cfg, _ := newTestConfig(t)
+		manager, recorder := readManager(t, cfg)
+
+		if err := manager.Handle(sdk.Transmission{
+			Trigger: "config",
+			Text:    "config get @" + otherPhone + " aliases",
+			Sender:  adminPhone,
+		}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+		if got := recorder.last(t); got != "aliases = (none)" {
+			t.Fatalf("get aliases = %q, want aliases = (none)", got)
+		}
+	})
+
+	t.Run("unknown key is a safe user error", func(t *testing.T) {
+		_, cfg, _ := newTestConfig(t)
+		manager, _ := readManager(t, cfg)
+
+		err := manager.Handle(sdk.Transmission{
+			Trigger: "config",
+			Text:    "config get nope",
+			Sender:  userPhone,
+		})
+		requireStatus(t, err, http.StatusBadRequest)
+		if message := (&Error{Status: http.StatusBadRequest, Message: err.Error()}).UserMessage(); !strings.Contains(message, "unknown key") {
+			t.Fatalf("error = %q, want an unknown-key hint", err)
+		}
+	})
+
+	t.Run("admin target uses the configured prefix", func(t *testing.T) {
+		root, cfg, _ := newTestConfig(t)
+		testutil.WriteJSON(t, filepath.Join(root, "users", adminPhone+".json"), config.UserConfig{
+			Prefixes: []string{"?"},
+		})
+		cfg = reloadConfig(t, root)
+		manager, recorder := readManager(t, cfg)
+
+		if err := manager.Handle(sdk.Transmission{
+			Trigger: "config",
+			Text:    "config get @" + userPhone + " timezone",
+			Sender:  adminPhone,
+		}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+		want := "Set with: ?config set @" + userPhone + " timezone America/Chicago"
+		if got := recorder.last(t); !strings.Contains(got, want) {
+			t.Fatalf("get = %q, want %q", got, want)
+		}
+	})
+}
+
+func TestConfigExport(t *testing.T) {
+	t.Run("self exports stored and effective values", func(t *testing.T) {
+		_, cfg, _ := newTestConfig(t)
+		manager, recorder := readManager(t, cfg)
+
+		if err := manager.Handle(sdk.Transmission{
+			Trigger: "config",
+			Text:    "config export",
+			Sender:  userPhone,
+		}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+
+		want := strings.Join([]string{
+			"!config set timezone America/Chicago",
+			"!config set prefixes !",
+			"!config set muted false",
+			"!config set aliases.satellites.wind wind-predictor",
+			"!config set aliases.commands.w fly",
+		}, "\n")
+		if got := recorder.last(t); got != want {
+			t.Fatalf("export =\n%s\nwant:\n%s", got, want)
+		}
+	})
+
+	t.Run("admin export targets the user", func(t *testing.T) {
+		const otherPhone = "+15555550103"
+		_, cfg, _ := newTestConfig(t)
+		manager, recorder := readManager(t, cfg)
+
+		if err := manager.Handle(sdk.Transmission{
+			Trigger: "config",
+			Text:    "config export @" + otherPhone,
+			Sender:  adminPhone,
+		}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+		want := "!config set @" + otherPhone + " timezone UTC"
+		if got := recorder.last(t); !strings.HasPrefix(got, want) {
+			t.Fatalf("export = %q, want prefix %q", got, want)
+		}
+	})
+}
+
+func TestConfigReadRequiresSender(t *testing.T) {
+	_, cfg, _ := newTestConfig(t)
+	manager := New(Options{Config: func() *config.Config { return cfg }})
+
+	err := manager.Handle(sdk.Transmission{
+		Trigger: "config",
+		Text:    "config list",
+		Sender:  userPhone,
+	})
+	requireStatus(t, err, http.StatusServiceUnavailable)
+}
+
+func TestConfigSuccessReactionFor(t *testing.T) {
+	tests := []struct {
+		text string
+		want string
+	}{
+		{text: "config set timezone UTC", want: "👍"},
+		{text: "config list", want: ""},
+		{text: "config", want: ""},
+		{text: "config get timezone", want: ""},
+		{text: "config export", want: ""},
+	}
+	for _, tt := range tests {
+		if got := SuccessReactionFor(tt.text); got != tt.want {
+			t.Errorf("SuccessReactionFor(%q) = %q, want %q", tt.text, got, tt.want)
+		}
+	}
+}

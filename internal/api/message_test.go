@@ -84,6 +84,7 @@ func TestMessageSingle(t *testing.T) {
 		wantRecip  string
 		wantText   string
 		wantProvdr string
+		wantStyled bool
 	}{
 		{
 			name: "valid single recipient",
@@ -99,6 +100,31 @@ func TestMessageSingle(t *testing.T) {
 			wantRecip:  recipient,
 			wantText:   "hello",
 			wantProvdr: provider,
+		},
+		{
+			name: "styled format is propagated",
+			body: outbound(t, model.Outbound{
+				Recipients: []string{recipient},
+				Text:       "*bold*",
+				Format:     model.FormatStyled,
+			}),
+			token:      func(t *testing.T) string { return mint(t, secret, auth.Admin, time.Hour) },
+			wantStatus: http.StatusAccepted,
+			wantJobs:   1,
+			wantRecip:  recipient,
+			wantText:   "*bold*",
+			wantProvdr: provider,
+			wantStyled: true,
+		},
+		{
+			name: "unknown format is rejected",
+			body: outbound(t, model.Outbound{
+				Recipients: []string{recipient},
+				Text:       "hello",
+				Format:     "markdown",
+			}),
+			token:      func(t *testing.T) string { return mint(t, secret, auth.Admin, time.Hour) },
+			wantStatus: http.StatusBadRequest,
 		},
 		{
 			name:       "malformed json",
@@ -193,6 +219,9 @@ func TestMessageSingle(t *testing.T) {
 				}
 				if job.Provider != tc.wantProvdr {
 					t.Errorf("job provider = %q, want %q", job.Provider, tc.wantProvdr)
+				}
+				if job.Styled != tc.wantStyled {
+					t.Errorf("job styled = %v, want %v", job.Styled, tc.wantStyled)
 				}
 			}
 			if tc.wantStatus == http.StatusBadRequest {

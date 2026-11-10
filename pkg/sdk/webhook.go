@@ -39,11 +39,15 @@ type SessionAction struct {
 // Response is the outbound envelope a satellite returns to Aether. It carries
 // the same JSON tags as internal/model.Outbound (plan §3.3 and §3.11).
 type Response struct {
-	Recipients []string       `json:"recipients"`
-	Text       string         `json:"text,omitempty"`
-	Satellite  string         `json:"satellite,omitempty"`
-	ThreadID   string         `json:"thread_id,omitempty"`
-	Session    *SessionAction `json:"session,omitempty"`
+	Recipients []string `json:"recipients"`
+	Text       string   `json:"text,omitempty"`
+	// Format selects provider-native text formatting. Empty or "plain" sends
+	// literal text; "styled" asks the provider to render its markup (for
+	// Signal: *bold*, _italic_, ~strike~, ||spoiler||, and `monospace`).
+	Format    string         `json:"format,omitempty"`
+	Satellite string         `json:"satellite,omitempty"`
+	ThreadID  string         `json:"thread_id,omitempty"`
+	Session   *SessionAction `json:"session,omitempty"`
 	// Status is the HTTP status SendResponse should write. It is not part of
 	// the /message envelope, so it never appears on the wire.
 	Status int `json:"-"`

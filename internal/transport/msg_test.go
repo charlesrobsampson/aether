@@ -25,10 +25,15 @@ type fakeMsgCall struct {
 	ctx       context.Context
 	recipient string
 	text      string
+	styled    bool
 }
 
 func (f *fakeMsgMessenger) Send(ctx context.Context, recipient, text string) error {
-	f.calls = append(f.calls, fakeMsgCall{ctx: ctx, recipient: recipient, text: text})
+	return f.SendStyled(ctx, recipient, text, false)
+}
+
+func (f *fakeMsgMessenger) SendStyled(ctx context.Context, recipient, text string, styled bool) error {
+	f.calls = append(f.calls, fakeMsgCall{ctx: ctx, recipient: recipient, text: text, styled: styled})
 	return f.err
 }
 
@@ -228,4 +233,22 @@ func TestMsgAdapterReact(t *testing.T) {
 			t.Fatalf("React() error = %v, want SendError 429", err)
 		}
 	})
+}
+
+func TestMsgAdapterSendStyled(t *testing.T) {
+	fake := &fakeMsgMessenger{name: "signal"}
+	adapter, err := newMsgAdapter(fake)
+	if err != nil {
+		t.Fatalf("newMsgAdapter() error = %v", err)
+	}
+	styled, ok := adapter.(StyledMessenger)
+	if !ok {
+		t.Fatal("adapter does not implement StyledMessenger")
+	}
+	if err := styled.SendStyled(context.Background(), "+15555550102", "*bold*", true); err != nil {
+		t.Fatalf("SendStyled() error = %v", err)
+	}
+	if len(fake.calls) != 1 || !fake.calls[0].styled {
+		t.Fatalf("calls = %#v, want one styled call", fake.calls)
+	}
 }

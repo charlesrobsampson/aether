@@ -12,6 +12,7 @@ func outboundFromResponse(resp sdk.Response) model.Outbound {
 	outbound := model.Outbound{
 		Recipients: resp.Recipients,
 		Text:       resp.Text,
+		Format:     resp.Format,
 		Satellite:  resp.Satellite,
 		ThreadID:   resp.ThreadID,
 	}

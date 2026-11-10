@@ -166,3 +166,46 @@ func TestUnknownCommandFeedback(t *testing.T) {
 		}
 	})
 }
+
+func TestBuiltinReactionForSelectsByCommand(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.System.Persona.Prefixes = []string{"!"}
+	cfg.Users = map[string]config.UserConfig{"+15555550102": {Timezone: "UTC"}}
+
+	var reactions []string
+	rt := New(Options{
+		Config: func() *config.Config { return cfg },
+		React: func(_ context.Context, _ model.Inbound, emoji string) error {
+			reactions = append(reactions, emoji)
+			return nil
+		},
+		Builtins: []Builtin{{
+			Satellite:       "switch",
+			Trigger:         "switch",
+			SuccessReaction: "👍",
+			SuccessReactionFor: func(text string) string {
+				if strings.HasSuffix(text, "quiet") {
+					return ""
+				}
+				return "👍"
+			},
+			Handle: func(context.Context, model.Inbound, string) error { return nil },
+		}},
+	})
+
+	rt.Dispatch(context.Background(), model.Inbound{
+		Sender: "+15555550102",
+		Text:   "!switch quiet",
+	})
+	if len(reactions) != 0 {
+		t.Fatalf("quiet command reacted with %v, want none", reactions)
+	}
+
+	rt.Dispatch(context.Background(), model.Inbound{
+		Sender: "+15555550102",
+		Text:   "!switch loud",
+	})
+	if len(reactions) != 1 || reactions[0] != "👍" {
+		t.Fatalf("reactions = %v, want [👍]", reactions)
+	}
+}

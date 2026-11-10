@@ -154,3 +154,23 @@ func TestHelpCapsOutput(t *testing.T) {
 		t.Fatalf("help reply length = %d, want <= %d", len(got), maxReplyChars)
 	}
 }
+
+func TestHelpSendsStyledText(t *testing.T) {
+	manager, sender := testManager(t, auth.User)
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help"}); err != nil {
+		t.Fatalf("HandleHelp: %v", err)
+	}
+	if len(sender.responses) != 1 {
+		t.Fatalf("responses = %d, want 1", len(sender.responses))
+	}
+	resp := sender.responses[0]
+	if resp.Format != "styled" {
+		t.Fatalf("format = %q, want styled", resp.Format)
+	}
+	if !strings.Contains(resp.Text, "*Available commands*") {
+		t.Fatalf("styled help lacks a bold header: %q", resp.Text)
+	}
+	if !strings.Contains(resp.Text, "*!help") {
+		t.Fatalf("styled help lacks a bold command: %q", resp.Text)
+	}
+}

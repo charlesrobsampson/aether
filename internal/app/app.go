@@ -189,14 +189,15 @@ func Run(ctx context.Context, opts Options) error {
 		Queue:  q,
 		Clock:  clock,
 	})
-	configManager := configmgr.New(configmgr.Options{
-		Config: snapshot.Load,
-		Store:  st,
-	})
 	sender := &queueSender{
 		queue:    q,
 		provider: initial.System.DefaultProvider,
 	}
+	configManager := configmgr.New(configmgr.Options{
+		Config: snapshot.Load,
+		Store:  st,
+		Out:    sender,
+	})
 	testManager := testsat.New(testsat.Options{
 		Client:    sender,
 		Scheduler: sched,
@@ -458,12 +459,21 @@ func builtins(configManager *configmgr.Manager, adminManager *adminmgr.Manager, 
 	}
 
 	return []router.Builtin{
-		wrap("config", "config", "👍", "Configuration updated.", configManager.HandlePatch),
+		withReactionFor(
+			wrap("config", "config", "👍", "Configuration updated.", configManager.Handle),
+			configmgr.SuccessReactionFor,
+		),
 		wrap("admin", "admin", "👍", "Done.", adminManager.HandleAdmin),
 		wrap("remind", "remind", "👍", "Reminder set.", testManager.HandleRemind),
 		wrap("test", "test", "", "", testManager.HandleTest),
 		wrap("help", "help", "", "", helpManager.HandleHelp),
 	}
+}
+
+// withReactionFor installs a text-dependent reaction selector on a built-in.
+func withReactionFor(builtin router.Builtin, choose func(string) string) router.Builtin {
+	builtin.SuccessReactionFor = choose
+	return builtin
 }
 
 // helpCommands describes the built-ins for !help. Satellite entries are added
@@ -502,10 +512,14 @@ func helpCommands() []helpsat.Entry {
 		{
 			Name:        "config",
 			Trigger:     "config",
-			Usage:       "config set <key> <value>",
-			Description: "Change your settings",
+			Usage:       "config [list|get|export|set] ...",
+			Description: "View or change your settings",
 			Role:        auth.User,
 			Details: []string{
+				"config list [@phone] — show settings and defaults.",
+				"config get [@phone] <key> — show one setting.",
+				"config export [@phone] — pasteable config set lines.",
+				"config set [@phone] <key> <value> — change a setting.",
 				"Keys: timezone, prefixes, muted, aliases.",
 				"Admins can target another user with @<phone>.",
 			},
@@ -535,6 +549,9 @@ func (s *queueSender) Send(_ context.Context, resp sdk.Response) error {
 	if s == nil || s.queue == nil {
 		return errors.New("app: outbound queue is not configured")
 	}
+	if !model.ValidFormat(resp.Format) {
+		return fmt.Errorf("app: unsupported message format %q", resp.Format)
+	}
 	if len(resp.Recipients) > 1 {
 		metrics.IncBulkMessageRequests()
 	}
@@ -545,6 +562,7 @@ func (s *queueSender) Send(_ context.Context, resp sdk.Response) error {
 		if err := s.queue.Enqueue(queue.Job{
 			Recipient: recipient,
 			Text:      resp.Text,
+			Styled:    model.StyledFormat(resp.Format),
 			Provider:  s.provider,
 		}); err != nil {
 			return err

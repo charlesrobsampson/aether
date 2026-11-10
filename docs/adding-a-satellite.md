@@ -115,6 +115,11 @@ func handle(w http.ResponseWriter, r *http.Request) {
 (or `200` when unset). Aether converts the envelope to an outbound job; it
 applies authentication, muting, rate limiting, and delivery.
 
+Pass `Format: "styled"` to opt into provider-native formatting. Aether currently
+forwards it to Signal, which renders `*bold*`, `_italic_`, `~strikethrough~`,
+`||spoiler||`, and `` `monospace` ``. An empty format (or `"plain"`) sends
+literal text; providers without styled support receive the text as-is.
+
 ## 4. Start, extend, and close sessions
 
 Attach a session action to a response, or POST one directly to `/message`:

@@ -205,8 +205,12 @@ func (r *Router) dispatchBuiltin(ctx context.Context, in model.Inbound, builtin 
 		return
 	}
 
-	if builtin.SuccessReaction != "" {
-		if err := r.reactTo(ctx, in, builtin.SuccessReaction); err != nil {
+	reaction := builtin.SuccessReaction
+	if builtin.SuccessReactionFor != nil {
+		reaction = builtin.SuccessReactionFor(text)
+	}
+	if reaction != "" {
+		if err := r.reactTo(ctx, in, reaction); err != nil {
 			log.Printf("router: reaction for %s failed: %v", builtin.Satellite, err)
 			if builtin.SuccessText != "" {
 				r.replyUser(ctx, in, builtin.SuccessText)

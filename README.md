@@ -59,6 +59,12 @@ All configuration is JSON under `AETHER_CONFIG_DIR` (default
 Set `AETHER_JWT_SECRET` to override `auth.jwt_secret`, and `AETHER_INGRESS_TOKEN`
 to require `X-Aether-Token` on `/receive`.
 
+Built-in chat commands for per-user settings: `!config list` shows effective
+values with defaults in parentheses, `!config get <key>` shows one setting,
+`!config export` prints pasteable `!config set` lines, and
+`!config set <key> <value>` changes a value. Admins can add `@<phone>` to target
+another user.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md) — component map, message flow, and

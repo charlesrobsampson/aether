@@ -36,6 +36,14 @@ func TestResponseMatchesOutbound(t *testing.T) {
 			name: "recipients only",
 			resp: sdk.Response{Recipients: []string{"+15555550102"}},
 		},
+		{
+			name: "styled text",
+			resp: sdk.Response{
+				Recipients: []string{"+15555550102"},
+				Text:       "*bold*",
+				Format:     "styled",
+			},
+		},
 	}
 
 	for _, tt := range tests {

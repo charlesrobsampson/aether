@@ -46,6 +46,13 @@ type Messenger interface {
 	Name() string
 }
 
+// StyledMessenger is an optional capability. A provider that can render
+// provider-native formatting implements it; the queue falls back to plain Send
+// for providers that do not.
+type StyledMessenger interface {
+	SendStyled(ctx context.Context, recipient, text string, styled bool) error
+}
+
 // SendError carries provider status metadata so the queue can decide whether a
 // failure is retryable without parsing provider strings. Err is the underlying
 // provider error, when there is one.
@@ -115,6 +122,7 @@ func Retryable(err error) (bool, time.Duration) {
 type Call struct {
 	Recipient string
 	Text      string
+	Styled    bool
 }
 
 // ReactionCall records one Fake.React attempt.
@@ -139,10 +147,15 @@ func NewFake() *Fake {
 
 // Send records the attempt and returns the error most recently installed by
 // FailWith. The attempt is recorded even when it fails.
-func (f *Fake) Send(_ context.Context, recipient, text string) error {
+func (f *Fake) Send(ctx context.Context, recipient, text string) error {
+	return f.SendStyled(ctx, recipient, text, false)
+}
+
+// SendStyled records the attempt, including whether styled text was requested.
+func (f *Fake) SendStyled(_ context.Context, recipient, text string, styled bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, Call{Recipient: recipient, Text: text})
+	f.calls = append(f.calls, Call{Recipient: recipient, Text: text, Styled: styled})
 	return f.err
 }
 

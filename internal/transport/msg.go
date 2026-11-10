@@ -54,7 +54,18 @@ func newMsgAdapter(inner msgclient.Messenger) (Messenger, error) {
 // and maps a typed provider status onto SendError so retry classification does
 // not depend on error strings.
 func (m *msgAdapter) Send(ctx context.Context, recipient, text string) error {
-	err := m.inner.Send(ctx, recipient, text)
+	return m.SendStyled(ctx, recipient, text, false)
+}
+
+// SendStyled forwards provider-native formatting. msg exposes it as an
+// optional capability, so a provider without support receives plain text.
+func (m *msgAdapter) SendStyled(ctx context.Context, recipient, text string, styled bool) error {
+	var err error
+	if sender, ok := m.inner.(msgclient.StyledMessenger); ok {
+		err = sender.SendStyled(ctx, recipient, text, styled)
+	} else {
+		err = m.inner.Send(ctx, recipient, text)
+	}
 	if err == nil {
 		return nil
 	}

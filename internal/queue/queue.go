@@ -53,6 +53,9 @@ type Job struct {
 	Recipient string
 	// Text is the message body. It is ignored when Reaction is set.
 	Text string
+	// Styled requests provider-native formatting. Providers without support
+	// receive the same text unstyled.
+	Styled bool
 	// Reaction, when non-nil, attaches a reaction to an existing message
 	// instead of sending text.
 	Reaction *transport.Reaction
@@ -359,6 +362,12 @@ func (q *Queue) deliver(job Job) {
 		var err error
 		if job.Reaction != nil {
 			err = q.messenger.React(ctx, *job.Reaction)
+		} else if job.Styled {
+			if styled, ok := q.messenger.(transport.StyledMessenger); ok {
+				err = styled.SendStyled(ctx, job.Recipient, job.Text, true)
+			} else {
+				err = q.messenger.Send(ctx, job.Recipient, job.Text)
+			}
 		} else {
 			err = q.messenger.Send(ctx, job.Recipient, job.Text)
 		}

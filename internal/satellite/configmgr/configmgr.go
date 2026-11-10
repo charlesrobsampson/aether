@@ -1,12 +1,21 @@
 // Package configmgr implements Aether's built-in config satellite (plan §3.6).
 //
-// A user edits their own users/<phone>.json with
+// A user inspects their settings with
+//
+//	!config list
+//	!config get <key>
+//	!config export
+//
+// and edits their own users/<phone>.json with
 //
 //	!config set <key> <value>
 //
-// and an admin edits another user with
+// and an admin edits or inspects another user with
 //
-//	!config set @<phone> <key> <value>
+//	!config list|get|export|set @<phone> ...
+//
+// Read-only output is plain key = value text with defaults marked in
+// parentheses; export prints pasteable !config set lines.
 //
 // A <satellite>.<key> target is treated as satellite-owned configuration: the
 // sender is resolved through users/<phone>.json's satellite_ids, and the change
@@ -102,6 +111,12 @@ type PatchStore interface {
 	LogPatch(ctx context.Context, rec store.PatchRecord) error
 }
 
+// Sender is the outbound seam used to reply with read-only settings output.
+// The app's queue sender satisfies it; tests inject a recorder.
+type Sender interface {
+	Send(ctx context.Context, resp sdk.Response) error
+}
+
 // Options configures a Manager.
 type Options struct {
 	// Config returns the active configuration. It is called per request so a
@@ -112,6 +127,9 @@ type Options struct {
 	// Client is the HTTP client used for forwarding. Nil uses a client with a
 	// 5 s timeout; tests inject httptest's client.
 	Client *http.Client
+	// Out replies with read-only settings output. Nil makes list/get/export
+	// fail with 503; set does not need it because the router reacts instead.
+	Out Sender
 }
 
 // Manager handles built-in !config commands.
@@ -119,6 +137,7 @@ type Manager struct {
 	config func() *config.Config
 	store  PatchStore
 	client *http.Client
+	out    Sender
 }
 
 // New returns a config-manager. With no configuration source every command is
@@ -128,6 +147,7 @@ func New(options Options) *Manager {
 		config: options.Config,
 		store:  options.Store,
 		client: options.Client,
+		out:    options.Out,
 	}
 	if manager.client == nil {
 		manager.client = &http.Client{Timeout: defaultHTTPTimeout}
@@ -145,21 +165,16 @@ type setCommand struct {
 
 // HandlePatch applies one !config set command. It never mutates t.
 func (m *Manager) HandlePatch(t sdk.Transmission) error {
-	cfg := m.configSnapshot()
-	if cfg == nil || strings.TrimSpace(cfg.Root) == "" {
-		return statusError(http.StatusServiceUnavailable, "config: configuration is not loaded")
-	}
-
-	sender := strings.TrimSpace(t.Sender)
-	if sender == "" {
-		return statusError(http.StatusUnauthorized, "config: sender is required")
-	}
-	role := auth.RoleOf(cfg, sender)
-	if role < auth.User {
-		return statusError(http.StatusForbidden, "config: sender is not authorized")
-	}
-
 	command, err := parseSet(t)
+	if err != nil {
+		return err
+	}
+	return m.handleSet(t, command)
+}
+
+// handleSet applies one parsed set command.
+func (m *Manager) handleSet(t sdk.Transmission, command setCommand) error {
+	cfg, sender, role, err := m.authorize(t)
 	if err != nil {
 		return err
 	}
@@ -171,18 +186,47 @@ func (m *Manager) HandlePatch(t sdk.Transmission) error {
 		return m.forward(context.Background(), cfg, sender, name, key, command.value)
 	}
 
-	targetPhone := sender
-	if command.phone != "" {
-		targetPhone = command.phone
-		if targetPhone != sender && role < auth.Admin {
-			return statusError(http.StatusForbidden, "config: admin role required to edit another user")
-		}
-	}
-	if !phonePattern.MatchString(targetPhone) {
-		return statusError(http.StatusBadRequest, "config: invalid phone %q", targetPhone)
+	targetPhone, err := resolveTargetPhone(sender, role, command.phone, "edit")
+	if err != nil {
+		return err
 	}
 
 	return m.applyLocal(context.Background(), cfg, sender, targetPhone, command.target, command.value)
+}
+
+// authorize resolves the active config and checks that the sender may use
+// !config at all.
+func (m *Manager) authorize(t sdk.Transmission) (*config.Config, string, auth.Role, error) {
+	cfg := m.configSnapshot()
+	if cfg == nil || strings.TrimSpace(cfg.Root) == "" {
+		return nil, "", auth.Denied, statusError(http.StatusServiceUnavailable, "config: configuration is not loaded")
+	}
+
+	sender := strings.TrimSpace(t.Sender)
+	if sender == "" {
+		return nil, "", auth.Denied, statusError(http.StatusUnauthorized, "config: sender is required")
+	}
+	role := auth.RoleOf(cfg, sender)
+	if role < auth.User {
+		return nil, "", auth.Denied, statusError(http.StatusForbidden, "config: sender is not authorized")
+	}
+	return cfg, sender, role, nil
+}
+
+// resolveTargetPhone returns the user file a set command edits and enforces
+// the admin-only rule for editing someone else.
+func resolveTargetPhone(sender string, role auth.Role, phone, verb string) (string, error) {
+	target := strings.TrimSpace(phone)
+	if target == "" {
+		target = sender
+	}
+	if target != sender && role < auth.Admin {
+		return "", statusError(http.StatusForbidden, "config: admin role required to %s another user", verb)
+	}
+	if !phonePattern.MatchString(target) {
+		return "", statusError(http.StatusBadRequest, "config: invalid phone %q", target)
+	}
+	return target, nil
 }
 
 // configSnapshot returns the active configuration, if any.

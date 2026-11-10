@@ -256,15 +256,15 @@ func renderList(entries []Entry, prefix string) string {
 		return "No commands are available."
 	}
 	var b strings.Builder
-	b.WriteString("Available commands:\n")
+	b.WriteString("*Available commands*\n")
 	for _, entry := range entries {
-		fmt.Fprintf(&b, "  %s%s", prefix, entry.Usage)
+		fmt.Fprintf(&b, "  *%s%s*", prefix, entry.Usage)
 		if entry.Description != "" {
 			fmt.Fprintf(&b, " — %s", entry.Description)
 		}
 		b.WriteString("\n")
 	}
-	fmt.Fprintf(&b, "Send %q for details.", prefix+"help <command>")
+	fmt.Fprintf(&b, "Send *%s* for details.", prefix+"help <command>")
 	return truncate(b.String())
 }
 
@@ -272,7 +272,7 @@ func renderList(entries []Entry, prefix string) string {
 // satellite patterns or aliases.
 func renderDetail(entry Entry, prefix string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s%s\n", prefix, entry.Usage)
+	fmt.Fprintf(&b, "*%s%s*\n", prefix, entry.Usage)
 	if entry.Description != "" {
 		b.WriteString(entry.Description)
 		b.WriteString("\n")
@@ -323,6 +323,7 @@ func (m *Manager) send(t sdk.Transmission, text string) error {
 	return m.client.Send(context.Background(), sdk.Response{
 		Recipients: []string{t.Sender},
 		Text:       text,
+		Format:     "styled",
 		Satellite:  satellite,
 		ThreadID:   t.ThreadID,
 	})

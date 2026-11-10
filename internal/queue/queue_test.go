@@ -977,3 +977,60 @@ func TestReactionJobUsesMessengerReact(t *testing.T) {
 		t.Fatal("React was not called")
 	}
 }
+
+// styledMessenger records whether SendStyled was used. It implements both the
+// base Messenger and the optional StyledMessenger capability.
+type styledMessenger struct {
+	plain  chan string
+	styled chan string
+}
+
+func (m *styledMessenger) Send(_ context.Context, _, text string) error {
+	m.plain <- text
+	return nil
+}
+func (m *styledMessenger) SendStyled(_ context.Context, _, text string, _ bool) error {
+	m.styled <- text
+	return nil
+}
+func (m *styledMessenger) React(context.Context, transport.Reaction) error { return nil }
+func (m *styledMessenger) Name() string                                    { return "styled" }
+
+func TestStyledJobUsesSendStyled(t *testing.T) {
+	messenger := &styledMessenger{
+		plain:  make(chan string, 1),
+		styled: make(chan string, 1),
+	}
+	q, err := New(Options{
+		Depth:     4,
+		Workers:   1,
+		Messenger: messenger,
+		Clock:     testutil.NewFakeClock(time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = q.Shutdown(ctx)
+	})
+
+	if err := q.Enqueue(Job{Recipient: "+15555550102", Text: "*bold*", Styled: true, Provider: "fake"}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	select {
+	case got := <-messenger.styled:
+		if got != "*bold*" {
+			t.Fatalf("styled text = %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SendStyled was not called")
+	}
+	select {
+	case got := <-messenger.plain:
+		t.Fatalf("plain Send was called with %q, want SendStyled", got)
+	default:
+	}
+}

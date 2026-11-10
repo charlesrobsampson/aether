@@ -40,6 +40,10 @@ type Builtin struct {
 	// SuccessReaction, when set, is attached to the inbound message after a
 	// successful command instead of sending a text acknowledgement.
 	SuccessReaction string
+	// SuccessReactionFor, when set, chooses the success reaction from the
+	// command text. Returning "" means the command replies itself and must not
+	// be acknowledged with a reaction.
+	SuccessReactionFor func(text string) string
 	// SuccessText is the fallback acknowledgement sent when SuccessReaction is
 	// set but the provider cannot attach reactions.
 	SuccessText string

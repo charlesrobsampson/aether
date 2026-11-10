@@ -123,6 +123,7 @@ func (h *messageHandler) handle(w http.ResponseWriter, r *http.Request, cfg *con
 		jobs := []queue.Job{{
 			Recipient: outbound.GroupChatID,
 			Text:      outbound.Text,
+			Styled:    model.StyledFormat(outbound.Format),
 			Provider:  provider,
 		}}
 		if !h.enqueueBatch(w, jobs) {
@@ -142,6 +143,7 @@ func (h *messageHandler) handle(w http.ResponseWriter, r *http.Request, cfg *con
 		jobs = append(jobs, queue.Job{
 			Recipient: recipient,
 			Text:      outbound.Text,
+			Styled:    model.StyledFormat(outbound.Format),
 			Provider:  provider,
 		})
 	}
@@ -223,6 +225,9 @@ func validateOutbound(outbound model.Outbound) error {
 	}
 	if strings.TrimSpace(outbound.Text) == "" && outbound.Session == nil {
 		return errors.New("message: text is required unless a session action is present")
+	}
+	if !model.ValidFormat(outbound.Format) {
+		return errors.New("message: format must be plain or styled")
 	}
 	return nil
 }
