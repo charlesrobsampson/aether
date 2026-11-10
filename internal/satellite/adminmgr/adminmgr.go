@@ -20,7 +20,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -36,10 +35,6 @@ const (
 	// approvalTTL is the pending-request lifetime from plan §3.5.
 	approvalTTL = 7 * 24 * time.Hour
 )
-
-// phonePattern keeps a phone usable as a file/list key and prevents path
-// traversal through the admin commands.
-var phonePattern = regexp.MustCompile(`^\+[0-9]{1,20}$`)
 
 // Error is a rejected admin-manager request with the HTTP status the built-in
 // command should surface. T35 maps it onto the app's response.
@@ -93,6 +88,12 @@ type JobQueue interface {
 	Enqueue(job queue.Job) error
 }
 
+// Sender is the outbound seam used to answer read-only admin commands. The
+// app's queue sender satisfies it; tests inject a recorder.
+type Sender interface {
+	Send(ctx context.Context, resp sdk.Response) error
+}
+
 // Clock is the injectable time source. testutil.FakeClock implements it.
 type Clock interface {
 	Now() time.Time
@@ -111,6 +112,9 @@ type Options struct {
 	Store ApprovalStore
 	// Queue receives maintainer notifications. Nil disables notification.
 	Queue JobQueue
+	// Out replies with read-only command output such as !pending. Nil makes
+	// !pending fail with 503.
+	Out Sender
 	// Clock defaults to the system clock.
 	Clock Clock
 }
@@ -121,6 +125,7 @@ type Manager struct {
 	config func() *config.Config
 	store  ApprovalStore
 	queue  JobQueue
+	out    Sender
 	clock  Clock
 	mu     sync.Mutex
 }
@@ -136,15 +141,24 @@ func New(options Options) *Manager {
 		config: options.Config,
 		store:  options.Store,
 		queue:  options.Queue,
+		out:    options.Out,
 		clock:  clock,
 	}
 }
 
-// RequestApproval records one new-number request. It is idempotent while a
-// request is pending: a repeat returns nil without notifying again. Expired
-// pending rows are marked expired first, so a later message starts a fresh
-// request.
-func (m *Manager) RequestApproval(ctx context.Context, phone string) error {
+// RequestApproval records one new-sender request without a display name.
+func (m *Manager) RequestApproval(ctx context.Context, identity string) error {
+	return m.RequestApprovalFrom(ctx, identity, "")
+}
+
+// RequestApprovalFrom records one new-sender request. Signal sometimes hides a
+// sender's phone number, so identity may be either a phone number or a UUID.
+// displayName is optional and only enriches the maintainer notification.
+//
+// It is idempotent while a request is pending: a repeat returns nil without
+// notifying again. Expired pending rows are marked expired first, so a later
+// message starts a fresh request.
+func (m *Manager) RequestApprovalFrom(ctx context.Context, identity, displayName string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -156,23 +170,23 @@ func (m *Manager) RequestApproval(ctx context.Context, phone string) error {
 		return statusError(http.StatusServiceUnavailable, "admin: approval store is not configured")
 	}
 
-	phone = strings.TrimSpace(phone)
-	if !phonePattern.MatchString(phone) {
-		return statusError(http.StatusBadRequest, "admin: invalid phone %q", phone)
+	identity = strings.TrimSpace(identity)
+	if !auth.ValidIdentity(identity) {
+		return statusError(http.StatusBadRequest, "admin: invalid sender %q", identity)
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// A denied number stays denied and an existing user/admin/maintainer needs
+	// A denied sender stays denied and an existing user/admin/maintainer needs
 	// no approval. Direct callers therefore cannot create noise for known
-	// numbers.
+	// senders.
 	admin := m.loadAdmin(cfg)
 	maintainerState := m.loadMaintainer(cfg)
-	if hasString(admin.DeniedNumbers, phone) ||
-		hasString(admin.ApprovedNumbers, phone) ||
-		hasString(admin.Admins, phone) ||
-		hasString(maintainerState.Maintainers, phone) {
+	if hasString(admin.DeniedNumbers, identity) ||
+		hasString(admin.ApprovedNumbers, identity) ||
+		hasString(admin.Admins, identity) ||
+		hasString(maintainerState.Maintainers, identity) {
 		return nil
 	}
 
@@ -181,7 +195,7 @@ func (m *Manager) RequestApproval(ctx context.Context, phone string) error {
 		return statusError(http.StatusInternalServerError, "admin: expire stale requests: %v", err)
 	}
 
-	pending, err := m.store.PendingApproval(ctx, phone)
+	pending, err := m.store.PendingApproval(ctx, identity)
 	if err != nil {
 		return statusError(http.StatusInternalServerError, "admin: read pending request: %v", err)
 	}
@@ -191,7 +205,7 @@ func (m *Manager) RequestApproval(ctx context.Context, phone string) error {
 
 	maintainer, next := pickMaintainer(maintainerState)
 	if _, err := m.store.InsertApproval(ctx, store.ApprovalRecord{
-		Phone:       phone,
+		Phone:       identity,
 		Maintainer:  maintainer,
 		Status:      store.ApprovalPending,
 		RequestedAt: now,
@@ -212,7 +226,7 @@ func (m *Manager) RequestApproval(ctx context.Context, phone string) error {
 		// and can still be listed or resolved if the queue is shutting down.
 		_ = m.queue.Enqueue(queue.Job{
 			Recipient: maintainer,
-			Text:      approvalNotification(phone),
+			Text:      approvalNotification(identity, displayName),
 		})
 	}
 	return nil
@@ -266,20 +280,79 @@ func (m *Manager) RemoveAdmin(ctx context.Context, actor, phone string) error {
 	return m.mutateAdmin(ctx, actor, phone, false)
 }
 
-// HandleAdmin parses and executes !admin add <phone> / !admin remove <phone>.
+// SuccessReactionFor keeps read-only approval listings from being acknowledged
+// with a reaction while approve/deny/add/remove still are.
+func SuccessReactionFor(text string) string {
+	fields := strings.Fields(stripCommandPrefix(text))
+	if len(fields) == 0 {
+		return "👍"
+	}
+	if strings.EqualFold(fields[0], "pending") {
+		return ""
+	}
+	if strings.EqualFold(fields[0], "admin") && len(fields) > 1 {
+		switch strings.ToLower(fields[1]) {
+		case "list", "pending":
+			return ""
+		}
+	}
+	return "👍"
+}
+
+// HandleAdmin parses and executes !admin approve|deny|list|add|remove.
 func (m *Manager) HandleAdmin(t sdk.Transmission) error {
-	action, phone, err := parseAdminCommand(t)
+	action, identity, err := parseAdminCommand(t)
 	if err != nil {
 		return err
 	}
 	switch action {
+	case "approve":
+		return m.Approve(context.Background(), t.Sender, identity)
+	case "deny":
+		return m.Deny(context.Background(), t.Sender, identity)
+	case "list":
+		return m.HandlePending(t)
 	case "add":
-		return m.AddAdmin(context.Background(), t.Sender, phone)
+		return m.AddAdmin(context.Background(), t.Sender, identity)
 	case "remove":
-		return m.RemoveAdmin(context.Background(), t.Sender, phone)
+		return m.RemoveAdmin(context.Background(), t.Sender, identity)
 	default:
-		return statusError(http.StatusBadRequest, `admin: expected "admin add|remove <phone>"`)
+		return statusError(http.StatusBadRequest, `admin: expected "admin approve|deny|list|add|remove [phone|uuid]"`)
 	}
+}
+
+// HandleApprove implements !approve <phone|uuid>.
+func (m *Manager) HandleApprove(t sdk.Transmission) error {
+	identity, err := parseIdentityCommand(t, "approve")
+	if err != nil {
+		return err
+	}
+	return m.Approve(context.Background(), t.Sender, identity)
+}
+
+// HandleDeny implements !deny <phone|uuid>.
+func (m *Manager) HandleDeny(t sdk.Transmission) error {
+	identity, err := parseIdentityCommand(t, "deny")
+	if err != nil {
+		return err
+	}
+	return m.Deny(context.Background(), t.Sender, identity)
+}
+
+// HandlePending implements !pending and !admin list.
+func (m *Manager) HandlePending(t sdk.Transmission) error {
+	cfg, err := m.requireConfig()
+	if err != nil {
+		return err
+	}
+	if auth.RoleOf(cfg, strings.TrimSpace(t.Sender)) < auth.Maintainer {
+		return statusError(http.StatusForbidden, "admin: maintainer role required")
+	}
+	pending, err := m.Pending(context.Background())
+	if err != nil {
+		return err
+	}
+	return m.send(t, renderPending(pending))
 }
 
 func (m *Manager) resolveApproval(ctx context.Context, actor, phone, status string) error {
@@ -300,8 +373,8 @@ func (m *Manager) resolveApproval(ctx context.Context, actor, phone, status stri
 	}
 
 	phone = strings.TrimSpace(phone)
-	if !phonePattern.MatchString(phone) {
-		return statusError(http.StatusBadRequest, "admin: invalid phone %q", phone)
+	if !auth.ValidIdentity(phone) {
+		return statusError(http.StatusBadRequest, "admin: invalid sender %q", phone)
 	}
 
 	m.mu.Lock()
@@ -353,8 +426,8 @@ func (m *Manager) mutateAdmin(ctx context.Context, actor, phone string, add bool
 	}
 
 	phone = strings.TrimSpace(phone)
-	if !phonePattern.MatchString(phone) {
-		return statusError(http.StatusBadRequest, "admin: invalid phone %q", phone)
+	if !auth.ValidIdentity(phone) {
+		return statusError(http.StatusBadRequest, "admin: invalid sender %q", phone)
 	}
 
 	m.mu.Lock()
@@ -433,14 +506,63 @@ func pickMaintainer(state config.MaintainerConfig) (string, int) {
 	return state.Maintainers[last%len(state.Maintainers)], last + 1
 }
 
-func approvalNotification(phone string) string {
+func approvalNotification(identity, displayName string) string {
+	who := identity
+	if name := strings.TrimSpace(displayName); name != "" && name != identity {
+		who = fmt.Sprintf("%s (%s)", name, identity)
+	}
 	return fmt.Sprintf(
 		`New Aether access request from %s. Reply "!approve %s" or "!deny %s".`,
-		phone, phone, phone,
+		who, identity, identity,
 	)
 }
 
+// renderPending formats the pending queue as text. Identities may be phone
+// numbers or Signal UUIDs.
+func renderPending(records []store.ApprovalRecord) string {
+	if len(records) == 0 {
+		return "No pending access requests."
+	}
+	var b strings.Builder
+	b.WriteString("Pending access requests:\n")
+	for _, rec := range records {
+		fmt.Fprintf(&b, "  #%d %s", rec.ID, rec.Phone)
+		if rec.Maintainer != "" {
+			fmt.Fprintf(&b, " (assigned to %s)", rec.Maintainer)
+		}
+		if !rec.RequestedAt.IsZero() {
+			fmt.Fprintf(&b, " — %s", rec.RequestedAt.UTC().Format("2006-01-02 15:04 UTC"))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString(`Reply "!approve <id>" or "!deny <id>".`)
+	return b.String()
+}
+
+// send emits one read-only admin answer to the originating sender.
+func (m *Manager) send(t sdk.Transmission, text string) error {
+	if m == nil || m.out == nil {
+		return statusError(http.StatusServiceUnavailable, "admin: outbound client is not configured")
+	}
+	recipient := strings.TrimSpace(t.Sender)
+	if recipient == "" {
+		return statusError(http.StatusUnauthorized, "admin: sender is required")
+	}
+	satellite := strings.TrimSpace(t.Satellite)
+	if satellite == "" {
+		satellite = "admin"
+	}
+	return m.out.Send(context.Background(), sdk.Response{
+		Recipients: []string{recipient},
+		Text:       text,
+		Satellite:  satellite,
+		ThreadID:   t.ThreadID,
+	})
+}
+
 func parseAdminCommand(t sdk.Transmission) (string, string, error) {
+	const usage = `admin: expected "admin approve|deny|list|add|remove [phone|uuid]"`
+
 	text := strings.TrimSpace(t.Text)
 	if text != "" {
 		text = stripCommandPrefix(text)
@@ -448,22 +570,69 @@ func parseAdminCommand(t sdk.Transmission) (string, string, error) {
 		if len(fields) > 0 && (fields[0] == "admin" || (t.Trigger != "" && fields[0] == t.Trigger)) {
 			fields = fields[1:]
 		}
-		if len(fields) != 2 {
-			return "", "", statusError(http.StatusBadRequest, `admin: expected "admin add|remove <phone>"`)
+		if len(fields) == 0 {
+			return "", "", statusError(http.StatusBadRequest, usage)
 		}
+
 		action := strings.ToLower(fields[0])
-		if action != "add" && action != "remove" {
-			return "", "", statusError(http.StatusBadRequest, `admin: expected "admin add|remove <phone>"`)
+		switch action {
+		case "list":
+			if len(fields) != 1 {
+				return "", "", statusError(http.StatusBadRequest, usage)
+			}
+			return "list", "", nil
+		case "approve", "deny", "add", "remove":
+			if len(fields) != 2 {
+				return "", "", statusError(http.StatusBadRequest, usage)
+			}
+			return action, fields[1], nil
+		default:
+			return "", "", statusError(http.StatusBadRequest, usage)
 		}
-		return action, fields[1], nil
 	}
 
 	action := strings.ToLower(argString(t.Args, "action"))
-	phone := strings.TrimSpace(argString(t.Args, "phone"))
-	if (action != "add" && action != "remove") || phone == "" {
-		return "", "", statusError(http.StatusBadRequest, `admin: expected "admin add|remove <phone>"`)
+	identity := strings.TrimSpace(argString(t.Args, "phone"))
+	if identity == "" {
+		identity = strings.TrimSpace(argString(t.Args, "id"))
 	}
-	return action, phone, nil
+	switch action {
+	case "list":
+		return "list", "", nil
+	case "approve", "deny", "add", "remove":
+		if identity == "" {
+			return "", "", statusError(http.StatusBadRequest, usage)
+		}
+		return action, identity, nil
+	default:
+		return "", "", statusError(http.StatusBadRequest, usage)
+	}
+}
+
+// parseIdentityCommand reads "<action> <phone|uuid>" for the standalone
+// !approve and !deny built-ins.
+func parseIdentityCommand(t sdk.Transmission, name string) (string, error) {
+	usage := fmt.Sprintf(`admin: expected "%s <phone|uuid>"`, name)
+
+	if text := strings.TrimSpace(t.Text); text != "" {
+		fields := strings.Fields(stripCommandPrefix(text))
+		if len(fields) > 0 && (fields[0] == name || (t.Trigger != "" && fields[0] == t.Trigger)) {
+			fields = fields[1:]
+		}
+		if len(fields) != 1 {
+			return "", statusError(http.StatusBadRequest, "%s", usage)
+		}
+		return fields[0], nil
+	}
+
+	identity := strings.TrimSpace(argString(t.Args, "id"))
+	if identity == "" {
+		identity = strings.TrimSpace(argString(t.Args, "phone"))
+	}
+	if identity == "" {
+		return "", statusError(http.StatusBadRequest, "%s", usage)
+	}
+	return identity, nil
 }
 
 func stripCommandPrefix(text string) string {

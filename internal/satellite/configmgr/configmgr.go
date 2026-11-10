@@ -39,7 +39,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -63,10 +62,6 @@ const (
 	// maxForwardBody bounds the response body we drain from a satellite.
 	maxForwardBody = 1 << 20
 )
-
-// phonePattern keeps a target phone usable as a file name and prevents path
-// traversal through !config set @<phone>.
-var phonePattern = regexp.MustCompile(`^\+[0-9]{1,20}$`)
 
 // Error is a rejected config-manager request with the HTTP status the built-in
 // command should surface. T35 maps it onto whatever response the app sends;
@@ -223,8 +218,8 @@ func resolveTargetPhone(sender string, role auth.Role, phone, verb string) (stri
 	if target != sender && role < auth.Admin {
 		return "", statusError(http.StatusForbidden, "config: admin role required to %s another user", verb)
 	}
-	if !phonePattern.MatchString(target) {
-		return "", statusError(http.StatusBadRequest, "config: invalid phone %q", target)
+	if !auth.ValidIdentity(target) {
+		return "", statusError(http.StatusBadRequest, "config: invalid user %q", target)
 	}
 	return target, nil
 }

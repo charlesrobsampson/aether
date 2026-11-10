@@ -162,29 +162,6 @@ func parseCommandArgs(args map[string]any) (command, error) {
 	}
 }
 
-// userIDPattern accepts either a phone number or a Signal UUID, because both
-// appear as user-file keys and inbound senders.
-var userIDPattern = func(value string) bool {
-	if phonePattern.MatchString(value) {
-		return true
-	}
-	parts := strings.Split(value, "-")
-	if len(parts) != 5 {
-		return false
-	}
-	for i, want := range []int{8, 4, 4, 4, 12} {
-		if len(parts[i]) != want {
-			return false
-		}
-		for _, r := range parts[i] {
-			if !strings.ContainsRune("0123456789abcdefABCDEF", r) {
-				return false
-			}
-		}
-	}
-	return true
-}
-
 func (m *Manager) handleRead(t sdk.Transmission, cmd command) error {
 	cfg, sender, role, err := m.authorize(t)
 	if err != nil {
@@ -221,7 +198,7 @@ func resolveReadTarget(sender string, role auth.Role, phone string) (string, err
 	if target != sender && role < auth.Admin {
 		return "", statusError(http.StatusForbidden, "config: admin role required to view another user")
 	}
-	if !userIDPattern(target) {
+	if !auth.ValidIdentity(target) {
 		return "", statusError(http.StatusBadRequest, "config: invalid user %q", target)
 	}
 	return target, nil

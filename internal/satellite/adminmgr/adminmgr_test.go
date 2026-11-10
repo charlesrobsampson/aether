@@ -60,12 +60,35 @@ func (q *fakeQueue) Jobs() []queue.Job {
 	return out
 }
 
+// fakeSender records read-only replies so !pending can be asserted without a
+// real messenger.
+type fakeSender struct {
+	mu        sync.Mutex
+	responses []sdk.Response
+}
+
+func (s *fakeSender) Send(_ context.Context, resp sdk.Response) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.responses = append(s.responses, resp)
+	return nil
+}
+
+func (s *fakeSender) Responses() []sdk.Response {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]sdk.Response, len(s.responses))
+	copy(out, s.responses)
+	return out
+}
+
 type fixture struct {
 	root    string
 	cfg     *config.Config
 	store   *store.Store
 	clock   *testutil.FakeClock
 	queue   *fakeQueue
+	out     *fakeSender
 	manager *Manager
 	config  func() *config.Config
 }
@@ -111,6 +134,7 @@ func newFixture(t *testing.T, maintainers []string, notify bool) *fixture {
 
 	clock := testutil.NewFakeClock(testNow)
 	q := &fakeQueue{}
+	out := &fakeSender{}
 
 	configFn := func() *config.Config {
 		loaded, err := config.LoadConfig(root)
@@ -124,6 +148,7 @@ func newFixture(t *testing.T, maintainers []string, notify bool) *fixture {
 		Config: configFn,
 		Store:  st,
 		Queue:  q,
+		Out:    out,
 		Clock:  clock,
 	})
 
@@ -133,6 +158,7 @@ func newFixture(t *testing.T, maintainers []string, notify bool) *fixture {
 		store:   st,
 		clock:   clock,
 		queue:   q,
+		out:     out,
 		manager: manager,
 		config:  configFn,
 	}
@@ -511,4 +537,142 @@ func TestAdminMaintenance(t *testing.T) {
 	if admin := f.admin(t); contains(admin.Admins, otherAdminPhone) {
 		t.Fatalf("user request modified admins: %v", admin.Admins)
 	}
+}
+
+const unknownUUID = "2aea5c40-0f8e-4ad7-8099-880b50064454"
+
+// TestApprovalFlowUUID covers a sender known only by a Signal UUID: the
+// request is recorded, the notification names it, and !approve authorizes it.
+func TestApprovalFlowUUID(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, []string{maintainerPhone1}, true)
+
+	if err := f.manager.RequestApprovalFrom(ctx, unknownUUID, "Tara Schick"); err != nil {
+		t.Fatalf("RequestApprovalFrom(%s): %v", unknownUUID, err)
+	}
+
+	pending, err := f.store.PendingApproval(ctx, unknownUUID)
+	if err != nil {
+		t.Fatalf("PendingApproval(%s): %v", unknownUUID, err)
+	}
+	if pending == nil || pending.Status != store.ApprovalPending {
+		t.Fatalf("pending = %+v, want a pending request", pending)
+	}
+
+	jobs := f.queue.Jobs()
+	if len(jobs) != 1 {
+		t.Fatalf("notification jobs = %d, want 1", len(jobs))
+	}
+	text := jobs[0].Text
+	for _, want := range []string{unknownUUID, "Tara Schick", "!approve " + unknownUUID} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("notification text %q does not contain %q", text, want)
+		}
+	}
+
+	if err := f.manager.HandleApprove(sdk.Transmission{
+		Trigger: "approve",
+		Text:    "!approve " + unknownUUID,
+		Sender:  maintainerPhone1,
+	}); err != nil {
+		t.Fatalf("HandleApprove(%s): %v", unknownUUID, err)
+	}
+	if admin := f.admin(t); !contains(admin.ApprovedNumbers, unknownUUID) {
+		t.Fatalf("approved_numbers = %v, want %s", admin.ApprovedNumbers, unknownUUID)
+	}
+	rows := f.approvalsFor(t, unknownUUID)
+	if len(rows) != 1 || rows[0].Status != store.ApprovalApproved {
+		t.Fatalf("approval rows = %+v, want one approved row", rows)
+	}
+}
+
+// TestPendingCommand covers the read-only listing, its role gate, and the
+// text-dependent reaction policy.
+func TestPendingCommand(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, []string{maintainerPhone1}, false)
+
+	if err := f.manager.RequestApproval(ctx, unknownPhone); err != nil {
+		t.Fatalf("RequestApproval(%s): %v", unknownPhone, err)
+	}
+
+	err := f.manager.HandlePending(sdk.Transmission{
+		Trigger: "pending",
+		Text:    "!pending",
+		Sender:  userPhone,
+	})
+	requireStatus(t, err, http.StatusForbidden)
+
+	if err := f.manager.HandlePending(sdk.Transmission{
+		Trigger: "pending",
+		Text:    "!pending",
+		Sender:  maintainerPhone1,
+	}); err != nil {
+		t.Fatalf("HandlePending: %v", err)
+	}
+	responses := f.out.Responses()
+	if len(responses) != 1 {
+		t.Fatalf("pending responses = %d, want 1", len(responses))
+	}
+	if responses[0].Recipients[0] != maintainerPhone1 {
+		t.Fatalf("pending recipient = %v, want %s", responses[0].Recipients, maintainerPhone1)
+	}
+	for _, want := range []string{unknownPhone, "!approve", "!deny"} {
+		if !strings.Contains(responses[0].Text, want) {
+			t.Fatalf("pending text %q does not contain %q", responses[0].Text, want)
+		}
+	}
+
+	if got := SuccessReactionFor("!pending"); got != "" {
+		t.Errorf("SuccessReactionFor(!pending) = %q, want no reaction", got)
+	}
+	if got := SuccessReactionFor("admin list"); got != "" {
+		t.Errorf("SuccessReactionFor(admin list) = %q, want no reaction", got)
+	}
+	if got := SuccessReactionFor("!admin approve " + unknownPhone); got != "👍" {
+		t.Errorf("SuccessReactionFor(admin approve) = %q, want 👍", got)
+	}
+}
+
+// TestAdminApproveDeny covers resolving requests through !admin.
+func TestAdminApproveDeny(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, []string{maintainerPhone1}, false)
+
+	if err := f.manager.RequestApproval(ctx, unknownPhone3); err != nil {
+		t.Fatalf("RequestApproval(%s): %v", unknownPhone3, err)
+	}
+	if err := f.manager.HandleAdmin(sdk.Transmission{
+		Trigger: "admin",
+		Text:    "!admin approve " + unknownPhone3,
+		Sender:  maintainerPhone1,
+	}); err != nil {
+		t.Fatalf("HandleAdmin(approve): %v", err)
+	}
+	if admin := f.admin(t); !contains(admin.ApprovedNumbers, unknownPhone3) {
+		t.Fatalf("approved_numbers = %v, want %s", admin.ApprovedNumbers, unknownPhone3)
+	}
+
+	if err := f.manager.RequestApproval(ctx, unknownPhone4); err != nil {
+		t.Fatalf("RequestApproval(%s): %v", unknownPhone4, err)
+	}
+	if err := f.manager.HandleAdmin(sdk.Transmission{
+		Trigger: "admin",
+		Text:    "!admin deny " + unknownPhone4,
+		Sender:  maintainerPhone1,
+	}); err != nil {
+		t.Fatalf("HandleAdmin(deny): %v", err)
+	}
+	if admin := f.admin(t); !contains(admin.DeniedNumbers, unknownPhone4) {
+		t.Fatalf("denied_numbers = %v, want %s", admin.DeniedNumbers, unknownPhone4)
+	}
+}
+
+// TestRequestApprovalRejectsInvalidIdentity keeps path traversal and malformed
+// identifiers out of the approvals table and the config tree.
+func TestRequestApprovalRejectsInvalidIdentity(t *testing.T) {
+	f := newFixture(t, []string{maintainerPhone1}, false)
+
+	err := f.manager.RequestApproval(context.Background(), "../admin")
+	requireStatus(t, err, http.StatusBadRequest)
 }

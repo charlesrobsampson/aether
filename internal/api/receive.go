@@ -44,6 +44,15 @@ type InboundClaim func(ctx context.Context, sender, messageID string) (bool, err
 // ignore an empty messageID.
 type InboundRelease func(ctx context.Context, sender, messageID string) error
 
+// UnknownSender describes a sender who is neither approved nor denied. Name
+// and Number are best-effort transport metadata used to make an approval
+// notification more useful.
+type UnknownSender struct {
+	Sender string
+	Name   string
+	Number string
+}
+
 // ReceiveOptions configures the /receive handler.
 type ReceiveOptions struct {
 	// Config returns the active configuration. A getter rather than a value
@@ -64,7 +73,7 @@ type ReceiveOptions struct {
 	// OnUnknown is called once for a sender who is neither approved nor
 	// denied. Deduplication against pending approvals belongs to the
 	// admin-manager.
-	OnUnknown func(phone string)
+	OnUnknown func(UnknownSender)
 	// Metrics receives receive outcome counters. Nil selects the
 	// process-wide default registry.
 	Metrics *metrics.Registry
@@ -111,6 +120,7 @@ func (h *receiveHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	inbound = canonicalizeSender(inbound)
 
 	switch {
 	case auth.IsDenied(cfg, inbound.Sender):
@@ -119,7 +129,11 @@ func (h *receiveHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 	case auth.RoleOf(cfg, inbound.Sender) == auth.Denied:
 		if h.options.OnUnknown != nil {
-			h.options.OnUnknown(inbound.Sender)
+			h.options.OnUnknown(UnknownSender{
+				Sender: inbound.Sender,
+				Name:   inbound.SenderName,
+				Number: inbound.SenderNumber,
+			})
 		}
 		h.options.Metrics.IncReceiveRequest(metrics.ReceiveAccepted)
 		w.WriteHeader(http.StatusAccepted)
@@ -195,6 +209,16 @@ func ingressTokenOK(cfg *config.Config, r *http.Request) bool {
 	}
 	got := r.Header.Get("X-Aether-Token")
 	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+// canonicalizeSender prefers a transport-reported phone number over a UUID.
+// Signal hides some senders behind a UUID; when sourceNumber is present the
+// phone is the identity users and admins actually know.
+func canonicalizeSender(in model.Inbound) model.Inbound {
+	if number := strings.TrimSpace(in.SenderNumber); auth.IsPhone(number) {
+		in.Sender = number
+	}
+	return in
 }
 
 // decodeInbound reads exactly one inbound envelope and validates the required

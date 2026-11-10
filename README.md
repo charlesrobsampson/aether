@@ -65,6 +65,10 @@ values with defaults in parentheses, `!config get <key>` shows one setting,
 `!config set <key> <value>` changes a value. Admins can add `@<phone>` to target
 another user.
 
+Maintainers resolve new senders with `!pending` (or `!admin list`),
+`!approve <phone|uuid>`, and `!deny <phone|uuid>`. Admins can use
+`!admin add|remove <phone|uuid>`.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md) — component map, message flow, and

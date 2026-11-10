@@ -9,6 +9,12 @@ type Inbound struct {
 	Provider  string `json:"provider,omitempty"`
 	GroupID   string `json:"group_id,omitempty"`
 	MessageID string `json:"message_id,omitempty"`
+	// SenderName is the transport's display name for the sender, when known.
+	SenderName string `json:"sender_name,omitempty"`
+	// SenderNumber is the sender's phone number when the transport supplies it
+	// separately from Sender. Signal may report a UUID as Sender and still know
+	// the E.164 number.
+	SenderNumber string `json:"sender_number,omitempty"`
 	// TimestampMS is the provider timestamp of the inbound message in
 	// milliseconds. It is the target of a reaction; zero means unavailable.
 	TimestampMS int64 `json:"timestamp_ms,omitempty"`

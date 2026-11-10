@@ -183,16 +183,17 @@ func Run(ctx context.Context, opts Options) error {
 		_ = q.Shutdown(drainCtx)
 	}()
 
-	adminManager := adminmgr.New(adminmgr.Options{
-		Config: snapshot.Load,
-		Store:  st,
-		Queue:  q,
-		Clock:  clock,
-	})
 	sender := &queueSender{
 		queue:    q,
 		provider: initial.System.DefaultProvider,
 	}
+	adminManager := adminmgr.New(adminmgr.Options{
+		Config: snapshot.Load,
+		Store:  st,
+		Queue:  q,
+		Out:    sender,
+		Clock:  clock,
+	})
 	configManager := configmgr.New(configmgr.Options{
 		Config: snapshot.Load,
 		Store:  st,
@@ -325,10 +326,10 @@ func Run(ctx context.Context, opts Options) error {
 		Release: func(ctx context.Context, sender, messageID string) error {
 			return st.ReleaseInbound(ctx, sender, messageID)
 		},
-		OnUnknown: func(phone string) {
+		OnUnknown: func(unknown api.UnknownSender) {
 			// The admin-manager deduplicates against pending approvals, so a
 			// repeat message does not create a second request (plan §3.2).
-			_ = adminManager.RequestApproval(context.Background(), phone)
+			_ = adminManager.RequestApprovalFrom(context.Background(), unknown.Sender, unknown.Name)
 		},
 		Queue:    q,
 		Sessions: rt,
@@ -445,14 +446,16 @@ func builtins(configManager *configmgr.Manager, adminManager *adminmgr.Manager, 
 			SuccessText:     fallback,
 			Handle: func(_ context.Context, in model.Inbound, text string) error {
 				return run(sdk.Transmission{
-					Command:     trigger,
-					Trigger:     trigger,
-					Text:        text,
-					Sender:      in.Sender,
-					Satellite:   satellite,
-					MessageID:   in.MessageID,
-					GroupID:     in.GroupID,
-					TimestampMS: in.TimestampMS,
+					Command:      trigger,
+					Trigger:      trigger,
+					Text:         text,
+					Sender:       in.Sender,
+					SenderName:   in.SenderName,
+					SenderNumber: in.SenderNumber,
+					Satellite:    satellite,
+					MessageID:    in.MessageID,
+					GroupID:      in.GroupID,
+					TimestampMS:  in.TimestampMS,
 				})
 			},
 		}
@@ -463,7 +466,13 @@ func builtins(configManager *configmgr.Manager, adminManager *adminmgr.Manager, 
 			wrap("config", "config", "👍", "Configuration updated.", configManager.Handle),
 			configmgr.SuccessReactionFor,
 		),
-		wrap("admin", "admin", "👍", "Done.", adminManager.HandleAdmin),
+		withReactionFor(
+			wrap("admin", "admin", "👍", "Done.", adminManager.HandleAdmin),
+			adminmgr.SuccessReactionFor,
+		),
+		wrap("approve", "approve", "👍", "Approved.", adminManager.HandleApprove),
+		wrap("deny", "deny", "👍", "Denied.", adminManager.HandleDeny),
+		wrap("pending", "pending", "", "", adminManager.HandlePending),
 		wrap("remind", "remind", "👍", "Reminder set.", testManager.HandleRemind),
 		wrap("test", "test", "", "", testManager.HandleTest),
 		wrap("help", "help", "", "", helpManager.HandleHelp),
@@ -530,7 +539,35 @@ func helpCommands() []helpsat.Entry {
 			Usage:       "admin <approve|deny|list|add|remove> ...",
 			Description: "Manage users and approvals",
 			Role:        auth.Admin,
-			Details:     []string{"Maintainers can list and resolve pending approvals."},
+			Details: []string{
+				"admin approve|deny <phone|uuid> — resolve an access request.",
+				"admin list — show pending requests.",
+				"admin add|remove <phone|uuid> — change the admin list.",
+			},
+		},
+		{
+			Name:        "approve",
+			Trigger:     "approve",
+			Usage:       "approve <phone|uuid>",
+			Description: "Approve an access request",
+			Role:        auth.Maintainer,
+			Details:     []string{`Use "pending" to list requests before resolving one.`},
+		},
+		{
+			Name:        "deny",
+			Trigger:     "deny",
+			Usage:       "deny <phone|uuid>",
+			Description: "Deny an access request",
+			Role:        auth.Maintainer,
+			Details:     []string{`Use "pending" to list requests before resolving one.`},
+		},
+		{
+			Name:        "pending",
+			Trigger:     "pending",
+			Usage:       "pending",
+			Description: "List pending access requests",
+			Role:        auth.Maintainer,
+			Details:     []string{`Resolve a request with "approve <id>" or "deny <id>".`},
 		},
 	}
 }

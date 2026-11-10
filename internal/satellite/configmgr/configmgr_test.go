@@ -296,6 +296,20 @@ func TestConfigSetCommand(t *testing.T) {
 			},
 		},
 		{
+			name:   "uuid target allowed for admin",
+			sender: adminPhone,
+			text:   "config set @2aea5c40-0f8e-4ad7-8099-880b50064454 timezone Europe/Paris",
+			check: func(t *testing.T, root string) {
+				var user config.UserConfig
+				if err := json.Unmarshal(readUserFile(t, root, "2aea5c40-0f8e-4ad7-8099-880b50064454"), &user); err != nil {
+					t.Fatalf("decode user: %v", err)
+				}
+				if user.Timezone != "Europe/Paris" {
+					t.Fatalf("timezone = %q, want Europe/Paris", user.Timezone)
+				}
+			},
+		},
+		{
 			name:           "disallowed key rejected",
 			sender:         userPhone,
 			text:           "config set default_provider openmessage",

@@ -146,15 +146,15 @@ func TestReceiveHandler(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var handled []model.Inbound
-			var unknownCalls []string
+			var unknownCalls []UnknownSender
 			handler := NewReceiveHandler(ReceiveOptions{
 				Config: tc.cfg,
 				Handle: func(_ context.Context, msg model.Inbound) error {
 					handled = append(handled, msg)
 					return nil
 				},
-				OnUnknown: func(phone string) {
-					unknownCalls = append(unknownCalls, phone)
+				OnUnknown: func(sender UnknownSender) {
+					unknownCalls = append(unknownCalls, sender)
 				},
 			})
 
@@ -178,8 +178,8 @@ func TestReceiveHandler(t *testing.T) {
 			if len(unknownCalls) != tc.wantUnknown {
 				t.Fatalf("unknown calls = %d, want %d: %v", len(unknownCalls), tc.wantUnknown, unknownCalls)
 			}
-			if tc.wantUnknown == 1 && unknownCalls[0] != tc.wantSender {
-				t.Errorf("unknown phone = %q, want %q", unknownCalls[0], tc.wantSender)
+			if tc.wantUnknown == 1 && unknownCalls[0].Sender != tc.wantSender {
+				t.Errorf("unknown sender = %q, want %q", unknownCalls[0].Sender, tc.wantSender)
 			}
 			if tc.wantHandled == 1 {
 				got := handled[0]
@@ -203,6 +203,100 @@ func TestReceiveHandler(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestReceiveUsesSenderNumberForAuthorization proves a UUID sender is
+// authorized by the phone number the transport supplies alongside it.
+func TestReceiveUsesSenderNumberForAuthorization(t *testing.T) {
+	const (
+		phone = "+18016739997"
+		uuid  = "2aea5c40-0f8e-4ad7-8099-880b50064454"
+	)
+
+	cfg := func() *config.Config {
+		return &config.Config{Admin: config.AdminConfig{ApprovedNumbers: []string{phone}}}
+	}
+	var handled []model.Inbound
+	handler := NewReceiveHandler(ReceiveOptions{
+		Config: cfg,
+		Handle: func(_ context.Context, msg model.Inbound) error {
+			handled = append(handled, msg)
+			return nil
+		},
+	})
+
+	raw, err := json.Marshal(model.Inbound{
+		Sender:       uuid,
+		SenderNumber: phone,
+		SenderName:   "Tara Schick",
+		Text:         "!test",
+		MessageID:    "m1",
+	})
+	if err != nil {
+		t.Fatalf("marshal inbound: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/receive", strings.NewReader(string(raw)))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (body %q)", rec.Code, rec.Body.String())
+	}
+	if len(handled) != 1 {
+		t.Fatalf("handled = %d, want 1", len(handled))
+	}
+	got := handled[0]
+	if got.Sender != phone {
+		t.Errorf("sender = %q, want the canonical phone %q", got.Sender, phone)
+	}
+	if got.SenderName != "Tara Schick" || got.SenderNumber != phone {
+		t.Errorf("metadata = name %q number %q, want both preserved", got.SenderName, got.SenderNumber)
+	}
+}
+
+// TestReceiveUnknownSenderCarriesMetadata proves the approval callback sees
+// the display name and phone number even when the sender is unknown.
+func TestReceiveUnknownSenderCarriesMetadata(t *testing.T) {
+	const (
+		phone = "+18016739997"
+		uuid  = "2aea5c40-0f8e-4ad7-8099-880b50064454"
+	)
+
+	cfg := func() *config.Config { return &config.Config{} }
+	var unknown []UnknownSender
+	handler := NewReceiveHandler(ReceiveOptions{
+		Config: cfg,
+		OnUnknown: func(sender UnknownSender) {
+			unknown = append(unknown, sender)
+		},
+	})
+
+	raw, err := json.Marshal(model.Inbound{
+		Sender:       uuid,
+		SenderNumber: phone,
+		SenderName:   "Tara Schick",
+		Text:         "!help",
+		MessageID:    "m2",
+	})
+	if err != nil {
+		t.Fatalf("marshal inbound: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/receive", strings.NewReader(string(raw)))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (body %q)", rec.Code, rec.Body.String())
+	}
+	if len(unknown) != 1 {
+		t.Fatalf("unknown calls = %d, want 1", len(unknown))
+	}
+	got := unknown[0]
+	if got.Sender != phone || got.Number != phone || got.Name != "Tara Schick" {
+		t.Errorf("unknown sender = %+v, want canonical phone and metadata", got)
 	}
 }
 

@@ -87,7 +87,9 @@ binds a port.
 - `sender` and `text` are required. **Denied** senders are acknowledged with
   `202` and dropped silently (no error, no outbound). **Unknown** (not yet
   approved) senders trigger the admin-manager approval request exactly once per
-  phone (deduplicated against pending approvals) and are dropped until approved.
+  identity (deduplicated against pending approvals) and are dropped until
+  approved. An identity may be a phone number or a Signal UUID; when the
+  transport also supplies `sender_number`, it is preferred for authorization.
 - The handler validates, deduplicates, and enqueues the message onto a bounded
   inbound dispatch queue, then returns `202`; it does not wait for a satellite.
   When the queue is full it returns `429` with `Retry-After: <seconds>`.
@@ -183,9 +185,10 @@ is a separate concern and does not affect `CheckAccess`.
 | `!config set <key> <value>` | User (self) | patch own `users/<phone>.json` |
 | `!config set @<phone> <key> <value>` | Admin | patch another user |
 | `!config set <satellite>.<key> <value>` | Admin | forward patch to the satellite |
-| `!approve <phone>` / `!deny <phone>` | Maintainer | resolve a pending request |
-| `!pending` | Maintainer | list pending requests |
-| `!admin add <phone>` / `!admin remove <phone>` | Admin | edit `admins` |
+| `!approve <phone|uuid>` / `!deny <phone|uuid>` | Maintainer | resolve a pending request |
+| `!pending` / `!admin list` | Maintainer | list pending requests |
+| `!admin approve|deny <phone|uuid>` | Maintainer | resolve a pending request |
+| `!admin add|remove <phone|uuid>` | Admin | edit `admins` |
 | `!remind ...` | User | relative/absolute reminder |
 | `!test` | User | echo `test received` |
 - `MatchCommand(input string, spec CommandSpec) (map[string]string, bool)` returns

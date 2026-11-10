@@ -25,6 +25,10 @@ type Transmission struct {
 	ThreadID  string         `json:"thread_id,omitempty"`
 	MessageID string         `json:"message_id,omitempty"`
 	GroupID   string         `json:"group_id,omitempty"`
+	// SenderName and SenderNumber carry the transport's display name and
+	// E.164 number when they are known separately from Sender.
+	SenderName   string `json:"sender_name,omitempty"`
+	SenderNumber string `json:"sender_number,omitempty"`
 	// TimestampMS is the provider timestamp of the inbound message. Reactions
 	// use it as the target, so zero means the provider did not supply one.
 	TimestampMS int64 `json:"timestamp_ms,omitempty"`

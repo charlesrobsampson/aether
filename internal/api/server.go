@@ -41,7 +41,7 @@ type ServerOptions struct {
 	Release InboundRelease
 	// OnUnknown is called once for a sender who is neither approved nor
 	// denied.
-	OnUnknown func(phone string)
+	OnUnknown func(UnknownSender)
 	// Queue receives outbound jobs from /message.
 	Queue Enqueuer
 	// Sessions applies session lifecycle actions from /message. Nil leaves
