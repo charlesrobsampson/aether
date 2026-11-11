@@ -960,3 +960,37 @@ func TestConfigSuccessReactionFor(t *testing.T) {
 		}
 	}
 }
+
+// TestConfigGroupCapsAdminRole proves an admin in a group chat cannot edit
+// another user, while still being able to edit their own settings at User level.
+func TestConfigGroupCapsAdminRole(t *testing.T) {
+	root, cfg, st := newTestConfig(t)
+	manager := New(Options{
+		Config: func() *config.Config { return cfg },
+		Store:  st,
+	})
+
+	err := manager.HandlePatch(sdk.Transmission{
+		Command: "set",
+		Trigger: "config",
+		Text:    "config set @" + userPhone + " timezone Europe/Paris",
+		Sender:  adminPhone,
+		GroupID: "group.example",
+	})
+	requireStatus(t, err, http.StatusForbidden)
+	if got := readUserFile(t, root, userPhone); !strings.Contains(string(got), "America/Chicago") {
+		t.Fatalf("group edit changed another user: %s", got)
+	}
+
+	err = manager.HandlePatch(sdk.Transmission{
+		Command: "set",
+		Trigger: "config",
+		Text:    "config set timezone Europe/Paris",
+		Sender:  adminPhone,
+		GroupID: "group.example",
+	})
+	requireStatus(t, err, 0)
+	if got := readUserFile(t, root, adminPhone); !strings.Contains(string(got), "Europe/Paris") {
+		t.Fatalf("group self edit did not apply: %s", got)
+	}
+}

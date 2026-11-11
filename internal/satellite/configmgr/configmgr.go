@@ -201,7 +201,7 @@ func (m *Manager) authorize(t sdk.Transmission) (*config.Config, string, auth.Ro
 	if sender == "" {
 		return nil, "", auth.Denied, statusError(http.StatusUnauthorized, "config: sender is required")
 	}
-	role := auth.RoleOf(cfg, sender)
+	role := auth.ChatRoleOf(cfg, sender, t.GroupID)
 	if role < auth.User {
 		return nil, "", auth.Denied, statusError(http.StatusForbidden, "config: sender is not authorized")
 	}

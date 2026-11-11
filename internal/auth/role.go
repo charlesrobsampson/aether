@@ -1,6 +1,10 @@
 package auth
 
-import "github.com/charlesrobsampson/aether/internal/config"
+import (
+	"strings"
+
+	"github.com/charlesrobsampson/aether/internal/config"
+)
 
 // Role is a linear access level. A role grants every capability of the roles
 // below it.
@@ -39,6 +43,20 @@ func RoleOf(cfg *config.Config, phone string) Role {
 		return User
 	}
 	return Denied
+}
+
+// ChatRoleOf returns the effective role for a message in a conversation.
+//
+// Group chats are capped at User: administrative and maintainer actions
+// (approvals, editing other users, system notifications) must originate from a
+// private chat so they cannot be triggered or observed by other group members.
+// Direct chats return the same role as RoleOf.
+func ChatRoleOf(cfg *config.Config, phone, groupID string) Role {
+	role := RoleOf(cfg, phone)
+	if strings.TrimSpace(groupID) != "" && role > User {
+		return User
+	}
+	return role
 }
 
 // CheckAccess reports whether phone has at least the needed role.

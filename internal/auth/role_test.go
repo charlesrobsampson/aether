@@ -82,3 +82,43 @@ func TestCheckAccess(t *testing.T) {
 		})
 	}
 }
+
+// TestChatRoleOf proves group chats cap privileged roles at User while direct
+// chats keep the full role.
+func TestChatRoleOf(t *testing.T) {
+	const (
+		userPhone       = "+15555550102"
+		adminPhone      = "+15555550101"
+		maintainerPhone = "+15555550103"
+		groupID         = "group.example"
+	)
+
+	cfg := &config.Config{
+		Admin: config.AdminConfig{
+			Admins:          []string{adminPhone},
+			ApprovedNumbers: []string{userPhone, adminPhone, maintainerPhone},
+		},
+		Maintainer: config.MaintainerConfig{Maintainers: []string{maintainerPhone}},
+	}
+
+	tests := []struct {
+		name    string
+		phone   string
+		groupID string
+		want    Role
+	}{
+		{name: "user in group", phone: userPhone, groupID: groupID, want: User},
+		{name: "admin in group is capped", phone: adminPhone, groupID: groupID, want: User},
+		{name: "maintainer in group is capped", phone: maintainerPhone, groupID: groupID, want: User},
+		{name: "admin in private keeps role", phone: adminPhone, want: Admin},
+		{name: "maintainer in private keeps role", phone: maintainerPhone, want: Maintainer},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ChatRoleOf(cfg, tc.phone, tc.groupID); got != tc.want {
+				t.Fatalf("ChatRoleOf(%s, %q) = %v, want %v", tc.phone, tc.groupID, got, tc.want)
+			}
+		})
+	}
+}

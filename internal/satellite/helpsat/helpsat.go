@@ -82,7 +82,7 @@ func (m *Manager) HandleHelp(t sdk.Transmission) error {
 		return sdk.Userf("Help needs a sender.")
 	}
 	cfg := m.configSnapshot()
-	role := auth.RoleOf(cfg, sender)
+	role := auth.ChatRoleOf(cfg, sender, t.GroupID)
 	prefix := helpPrefix(cfg)
 
 	entries := m.entries(cfg, sender, role)

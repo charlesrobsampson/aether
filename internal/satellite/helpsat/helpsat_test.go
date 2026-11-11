@@ -192,3 +192,23 @@ func TestHelpSendsStyledText(t *testing.T) {
 		t.Fatalf("styled help lacks a bold command: %q", resp.Text)
 	}
 }
+
+// TestHelpGroupCapsAdminRole proves an admin in a group sees only User-level
+// commands, matching the group privilege cap.
+func TestHelpGroupCapsAdminRole(t *testing.T) {
+	manager, sender := testManager(t, auth.Admin)
+	if err := manager.HandleHelp(sdk.Transmission{
+		Sender:  testSender,
+		Text:    "help",
+		GroupID: "group.example",
+	}); err != nil {
+		t.Fatalf("HandleHelp: %v", err)
+	}
+	got := sender.last(t)
+	if strings.Contains(got, "!admin") {
+		t.Fatalf("group help leaked an admin command:\n%s", got)
+	}
+	if !strings.Contains(got, "!test") {
+		t.Fatalf("group help lacks user commands:\n%s", got)
+	}
+}

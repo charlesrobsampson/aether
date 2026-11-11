@@ -94,6 +94,12 @@ or a literal `@<persona name>`); other group messages are ignored. An approved
 sender's first message in an unapproved group creates a group approval request
 instead of dispatching.
 
+Group chats are capped at User privileges: admin and maintainer actions
+(`!admin`, `!approve`, `!deny`, `!pending`, editing another user's config) must
+originate from a private chat. Group names are resolved from the Signal groups
+API when the transport does not include one, so approvals and logs show the
+group's display name rather than its opaque ID.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md) — component map, message flow, and

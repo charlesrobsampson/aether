@@ -274,12 +274,12 @@ func (m *Manager) requestApproval(ctx context.Context, identity, kind, displayNa
 // Approve moves phone to approved_numbers and resolves its pending request.
 // Repeating an approval is a no-op success (plan §3.5).
 func (m *Manager) Approve(ctx context.Context, actor, phone string) error {
-	return m.resolveApproval(ctx, actor, phone, store.ApprovalApproved)
+	return m.resolveApproval(ctx, actor, "", phone, store.ApprovalApproved)
 }
 
 // Deny moves phone to denied_numbers and resolves its pending request.
 func (m *Manager) Deny(ctx context.Context, actor, phone string) error {
-	return m.resolveApproval(ctx, actor, phone, store.ApprovalDenied)
+	return m.resolveApproval(ctx, actor, "", phone, store.ApprovalDenied)
 }
 
 // Pending expires stale requests and returns the remaining pending ones,
@@ -311,12 +311,12 @@ func (m *Manager) Pending(ctx context.Context) ([]store.ApprovalRecord, error) {
 // AddAdmin adds phone to admin.json's admins list. It also removes the number
 // from denied_numbers so the new role is effective.
 func (m *Manager) AddAdmin(ctx context.Context, actor, phone string) error {
-	return m.mutateAdmin(ctx, actor, phone, true)
+	return m.mutateAdmin(ctx, actor, "", phone, true)
 }
 
 // RemoveAdmin removes phone from admin.json's admins list.
 func (m *Manager) RemoveAdmin(ctx context.Context, actor, phone string) error {
-	return m.mutateAdmin(ctx, actor, phone, false)
+	return m.mutateAdmin(ctx, actor, "", phone, false)
 }
 
 // SuccessReactionFor keeps read-only approval listings from being acknowledged
@@ -346,15 +346,15 @@ func (m *Manager) HandleAdmin(t sdk.Transmission) error {
 	}
 	switch action {
 	case "approve":
-		return m.resolveApprovalRefs(context.Background(), t.Sender, identity, store.ApprovalApproved, true)
+		return m.resolveApprovalRefs(context.Background(), t.Sender, t.GroupID, identity, store.ApprovalApproved, true)
 	case "deny":
-		return m.resolveApprovalRefs(context.Background(), t.Sender, identity, store.ApprovalDenied, true)
+		return m.resolveApprovalRefs(context.Background(), t.Sender, t.GroupID, identity, store.ApprovalDenied, true)
 	case "list":
 		return m.HandlePending(t)
 	case "add":
-		return m.AddAdmin(context.Background(), t.Sender, identity)
+		return m.mutateAdmin(context.Background(), t.Sender, t.GroupID, identity, true)
 	case "remove":
-		return m.RemoveAdmin(context.Background(), t.Sender, identity)
+		return m.mutateAdmin(context.Background(), t.Sender, t.GroupID, identity, false)
 	default:
 		return statusError(http.StatusBadRequest, `admin: expected "admin approve|deny|list|add|remove [id[,id...]|phone|uuid]"`)
 	}
@@ -368,7 +368,7 @@ func (m *Manager) HandleApprove(t sdk.Transmission) error {
 	if err != nil {
 		return err
 	}
-	return m.resolveApprovalRefs(context.Background(), t.Sender, target, store.ApprovalApproved, true)
+	return m.resolveApprovalRefs(context.Background(), t.Sender, t.GroupID, target, store.ApprovalApproved, true)
 }
 
 // HandleDeny implements !deny [id[,id...]|phone|uuid].
@@ -377,7 +377,7 @@ func (m *Manager) HandleDeny(t sdk.Transmission) error {
 	if err != nil {
 		return err
 	}
-	return m.resolveApprovalRefs(context.Background(), t.Sender, target, store.ApprovalDenied, true)
+	return m.resolveApprovalRefs(context.Background(), t.Sender, t.GroupID, target, store.ApprovalDenied, true)
 }
 
 // HandlePending implements !pending and !admin list.
@@ -386,8 +386,8 @@ func (m *Manager) HandlePending(t sdk.Transmission) error {
 	if err != nil {
 		return err
 	}
-	if auth.RoleOf(cfg, strings.TrimSpace(t.Sender)) < auth.Maintainer {
-		return statusError(http.StatusForbidden, "admin: maintainer role required")
+	if auth.ChatRoleOf(cfg, strings.TrimSpace(t.Sender), t.GroupID) < auth.Maintainer {
+		return statusError(http.StatusForbidden, "admin: maintainer role required in a private chat")
 	}
 	pending, err := m.Pending(context.Background())
 	if err != nil {
@@ -396,17 +396,20 @@ func (m *Manager) HandlePending(t sdk.Transmission) error {
 	return m.send(t, renderPending(pending, approvalPrefix(cfg, strings.TrimSpace(t.Sender))))
 }
 
-func (m *Manager) resolveApproval(ctx context.Context, actor, phone, status string) error {
+func (m *Manager) resolveApproval(ctx context.Context, actor, groupID, phone, status string) error {
 	if strings.TrimSpace(phone) == "" {
 		return statusError(http.StatusBadRequest, "admin: invalid sender %q", phone)
 	}
-	return m.resolveApprovalRefs(ctx, actor, phone, status, false)
+	return m.resolveApprovalRefs(ctx, actor, groupID, phone, status, false)
 }
 
 // resolveApprovalRefs resolves one or more targets. A target is a pending
 // approval row id, a comma/space separated list of row ids, or a phone/UUID.
 // allowEmpty makes a bare command resolve the newest pending request.
-func (m *Manager) resolveApprovalRefs(ctx context.Context, actor, raw, status string, allowEmpty bool) error {
+//
+// groupID is the originating conversation. Approvals are administrative, so a
+// group message is capped at User and rejected here.
+func (m *Manager) resolveApprovalRefs(ctx context.Context, actor, groupID, raw, status string, allowEmpty bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -419,8 +422,8 @@ func (m *Manager) resolveApprovalRefs(ctx context.Context, actor, raw, status st
 	}
 
 	actor = strings.TrimSpace(actor)
-	if auth.RoleOf(cfg, actor) < auth.Maintainer {
-		return statusError(http.StatusForbidden, "admin: maintainer role required")
+	if auth.ChatRoleOf(cfg, actor, groupID) < auth.Maintainer {
+		return statusError(http.StatusForbidden, "admin: maintainer role required in a private chat")
 	}
 
 	refs, err := parseApprovalRefs(raw)
@@ -560,7 +563,7 @@ func (m *Manager) resolveApprovalRefs(ctx context.Context, actor, raw, status st
 	return nil
 }
 
-func (m *Manager) mutateAdmin(ctx context.Context, actor, phone string, add bool) error {
+func (m *Manager) mutateAdmin(ctx context.Context, actor, groupID, phone string, add bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -570,8 +573,8 @@ func (m *Manager) mutateAdmin(ctx context.Context, actor, phone string, add bool
 	}
 
 	actor = strings.TrimSpace(actor)
-	if auth.RoleOf(cfg, actor) < auth.Admin {
-		return statusError(http.StatusForbidden, "admin: admin role required")
+	if auth.ChatRoleOf(cfg, actor, groupID) < auth.Admin {
+		return statusError(http.StatusForbidden, "admin: admin role required in a private chat")
 	}
 
 	phone = strings.TrimSpace(phone)

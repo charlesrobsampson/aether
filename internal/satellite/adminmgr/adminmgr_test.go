@@ -908,3 +908,51 @@ func TestApprovalNotificationUsesMaintainerPrefix(t *testing.T) {
 		t.Fatalf("notification %q does not show the bare approve command", text)
 	}
 }
+
+// TestGroupChatsCannotAdminister proves group messages are capped at User:
+// approvals and admin mutations must come from a private chat.
+func TestGroupChatsCannotAdminister(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, []string{maintainerPhone1}, false)
+
+	if err := f.manager.RequestApproval(ctx, unknownPhone); err != nil {
+		t.Fatalf("RequestApproval: %v", err)
+	}
+	pending, err := f.store.PendingApproval(ctx, unknownPhone)
+	if err != nil || pending == nil {
+		t.Fatalf("PendingApproval = %+v, %v", pending, err)
+	}
+
+	group := sdk.Transmission{
+		Sender:  maintainerPhone1,
+		GroupID: "group.example",
+		Trigger: "approve",
+		Text:    "approve " + strconv.FormatInt(pending.ID, 10),
+	}
+	requireStatus(t, f.manager.HandleApprove(group), http.StatusForbidden)
+	if rec, err := f.store.PendingApproval(ctx, unknownPhone); err != nil || rec == nil {
+		t.Fatalf("group approval resolved the request: %+v, %v", rec, err)
+	}
+
+	requireStatus(t, f.manager.HandleAdmin(sdk.Transmission{
+		Sender:  adminPhone,
+		GroupID: "group.example",
+		Trigger: "admin",
+		Text:    "admin add " + newAdminPhone,
+	}), http.StatusForbidden)
+	if admin := f.admin(t); contains(admin.Admins, newAdminPhone) {
+		t.Fatalf("group admin add wrote %s to admins", newAdminPhone)
+	}
+
+	// The same maintainer can still resolve the request in a private chat.
+	if err := f.manager.HandleApprove(sdk.Transmission{
+		Sender:  maintainerPhone1,
+		Trigger: "approve",
+		Text:    "approve " + strconv.FormatInt(pending.ID, 10),
+	}); err != nil {
+		t.Fatalf("private HandleApprove: %v", err)
+	}
+	if admin := f.admin(t); !contains(admin.ApprovedNumbers, unknownPhone) {
+		t.Fatalf("private approval did not add %s to approved_numbers", unknownPhone)
+	}
+}
