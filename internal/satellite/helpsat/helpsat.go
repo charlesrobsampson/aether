@@ -203,13 +203,27 @@ func resolveAlias(cfg *config.Config, sender, topic string) string {
 	}
 	user := cfg.Users[sender]
 	topic = strings.TrimSpace(topic)
-	if target := user.Aliases.Commands[topic]; target != "" {
+	if target := aliasFold(user.Aliases.Commands, topic); target != "" {
 		return target
 	}
-	if target := user.Aliases.Satellites[topic]; target != "" {
+	if target := aliasFold(user.Aliases.Satellites, topic); target != "" {
 		return target
 	}
 	return topic
+}
+
+// aliasFold resolves an alias exactly first, then case-insensitively so a
+// capitalized first word from a phone keyboard still works.
+func aliasFold(values map[string]string, key string) string {
+	if value := values[key]; value != "" {
+		return value
+	}
+	for name, value := range values {
+		if strings.EqualFold(name, key) {
+			return value
+		}
+	}
+	return ""
 }
 
 // findEntry resolves a canonical trigger, satellite name, or configured alias.

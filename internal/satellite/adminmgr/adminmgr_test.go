@@ -644,7 +644,7 @@ func TestAdminApproveDeny(t *testing.T) {
 	}
 	if err := f.manager.HandleAdmin(sdk.Transmission{
 		Trigger: "admin",
-		Text:    "!admin approve " + unknownPhone3,
+		Text:    "!Admin Approve " + unknownPhone3,
 		Sender:  maintainerPhone1,
 	}); err != nil {
 		t.Fatalf("HandleAdmin(approve): %v", err)
@@ -691,7 +691,7 @@ func TestApproveBatchByID(t *testing.T) {
 
 	if err := f.manager.HandleApprove(sdk.Transmission{
 		Trigger: "approve",
-		Text:    "!approve #1,3",
+		Text:    "!Approve #1,3",
 		Sender:  maintainerPhone1,
 	}); err != nil {
 		t.Fatalf("HandleApprove(batch): %v", err)

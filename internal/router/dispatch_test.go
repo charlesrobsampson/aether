@@ -524,3 +524,58 @@ func TestDispatchMetrics(t *testing.T) {
 		t.Errorf("dispatch failures{reason=post} = %d, want 0", got)
 	}
 }
+
+// TestCommandMatchingIsCaseInsensitive covers phone-keyboard autocapitalization
+// for built-in triggers, satellite triggers, aliases, and persona prefixes.
+func TestCommandMatchingIsCaseInsensitive(t *testing.T) {
+	router := &Router{builtins: []Builtin{
+		{Trigger: "approve"},
+		{Trigger: "help"},
+	}}
+	for _, text := range []string{"approve 1", "Approve 1", "APPROVE 1"} {
+		if _, ok := router.resolveBuiltin(text); !ok {
+			t.Errorf("resolveBuiltin(%q) did not match", text)
+		}
+	}
+
+	cfg := &config.Config{
+		System: config.SystemConfig{
+			Persona: config.PersonaConfig{Prefixes: []string{"Aether "}},
+		},
+		Satellites: map[string]config.SatelliteConfig{
+			"wind-predictor": {Name: "wind-predictor", Trigger: "fly"},
+		},
+	}
+	user := config.UserConfig{Aliases: config.Aliases{
+		Commands:   map[string]string{"w": "fly"},
+		Satellites: map[string]string{"wind": "wind-predictor"},
+	}}
+
+	tests := []struct {
+		text          string
+		wantCanonical string
+	}{
+		{text: "fly FPS", wantCanonical: "fly FPS"},
+		{text: "Fly FPS", wantCanonical: "fly FPS"},
+		{text: "FLY FPS", wantCanonical: "fly FPS"},
+		{text: "W FPS", wantCanonical: "fly FPS"},
+		{text: "Wind FPS", wantCanonical: "fly FPS"},
+	}
+	for _, tt := range tests {
+		_, canonical, ok := resolveRoute(cfg, user, tt.text)
+		if !ok {
+			t.Errorf("resolveRoute(%q) did not match", tt.text)
+			continue
+		}
+		if canonical != tt.wantCanonical {
+			t.Errorf("resolveRoute(%q) canonical = %q, want %q", tt.text, canonical, tt.wantCanonical)
+		}
+	}
+
+	if prefix, ok := matchedPrefix("AETHER help", cfg.System.Persona.Prefixes); !ok || prefix != "Aether " {
+		t.Errorf("matchedPrefix(AETHER) = %q, %v", prefix, ok)
+	}
+	if got := stripPrefixes("aether help", cfg.System.Persona.Prefixes); got != "help" {
+		t.Errorf("stripPrefixes(aether) = %q, want help", got)
+	}
+}

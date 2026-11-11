@@ -170,7 +170,7 @@ func (r *Router) resolveBuiltin(text string) (Builtin, bool) {
 		return Builtin{}, false
 	}
 	for _, builtin := range r.builtins {
-		if builtin.Trigger != "" && builtin.Trigger == fields[0] {
+		if builtin.Trigger != "" && strings.EqualFold(builtin.Trigger, fields[0]) {
 			return builtin, true
 		}
 	}
@@ -556,9 +556,9 @@ func resolveRoute(cfg *config.Config, user config.UserConfig, text string) (conf
 	routes := routesFromConfig(cfg)
 
 	var route *config.RouteEntry
-	if target := user.Aliases.Satellites[token]; target != "" {
+	if target := lookupFold(user.Aliases.Satellites, token); target != "" {
 		for i := range routes {
-			if routes[i].Satellite == target {
+			if strings.EqualFold(routes[i].Satellite, target) {
 				route = &routes[i]
 				break
 			}
@@ -566,11 +566,11 @@ func resolveRoute(cfg *config.Config, user config.UserConfig, text string) (conf
 	}
 	if route == nil {
 		lookup := token
-		if target := user.Aliases.Commands[token]; target != "" {
+		if target := lookupFold(user.Aliases.Commands, token); target != "" {
 			lookup = target
 		}
 		for i := range routes {
-			if routes[i].Trigger == lookup {
+			if strings.EqualFold(routes[i].Trigger, lookup) {
 				route = &routes[i]
 				break
 			}
@@ -620,6 +620,20 @@ func routesFromConfig(cfg *config.Config) []config.RouteEntry {
 	return routes
 }
 
+// lookupFold resolves a map key exactly first, then case-insensitively. Exact
+// matches win so aliases that differ only by case keep their explicit meaning.
+func lookupFold(values map[string]string, key string) string {
+	if value := values[key]; value != "" {
+		return value
+	}
+	for name, value := range values {
+		if strings.EqualFold(name, key) {
+			return value
+		}
+	}
+	return ""
+}
+
 // onlyEmptyPrefixes reports whether prefixes is explicitly configured but
 // contains no usable value.
 func onlyEmptyPrefixes(prefixes []string) bool {
@@ -638,7 +652,10 @@ func matchedPrefix(text string, groups ...[]string) (string, bool) {
 	text = strings.TrimSpace(text)
 	for _, prefixes := range groups {
 		for _, prefix := range prefixes {
-			if prefix != "" && strings.HasPrefix(text, prefix) {
+			if prefix == "" || len(text) < len(prefix) {
+				continue
+			}
+			if strings.EqualFold(text[:len(prefix)], prefix) {
 				return prefix, true
 			}
 		}
@@ -654,7 +671,7 @@ func stripPrefixes(text string, groups ...[]string) string {
 		stripped := false
 		for _, prefixes := range groups {
 			for _, prefix := range prefixes {
-				if prefix == "" || !strings.HasPrefix(text, prefix) {
+				if prefix == "" || len(text) < len(prefix) || !strings.EqualFold(text[:len(prefix)], prefix) {
 					continue
 				}
 				text = strings.TrimSpace(text[len(prefix):])

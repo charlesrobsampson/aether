@@ -237,10 +237,10 @@ func (m *Manager) configSnapshot() *config.Config {
 func parseSet(t sdk.Transmission) (setCommand, error) {
 	if text := strings.TrimSpace(t.Text); text != "" {
 		fields := strings.Fields(text)
-		if len(fields) > 0 && (fields[0] == "config" || (t.Trigger != "" && fields[0] == t.Trigger)) {
+		if len(fields) > 0 && (strings.EqualFold(fields[0], "config") || (t.Trigger != "" && strings.EqualFold(fields[0], t.Trigger))) {
 			fields = fields[1:]
 		}
-		if len(fields) == 0 || fields[0] != "set" {
+		if len(fields) == 0 || !strings.EqualFold(fields[0], "set") {
 			return setCommand{}, statusBadCommand()
 		}
 		return parseSetFields(fields[1:])

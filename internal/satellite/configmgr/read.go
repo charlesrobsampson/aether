@@ -52,7 +52,7 @@ func SuccessReactionFor(text string) string {
 func parseCommand(t sdk.Transmission) (command, error) {
 	if text := strings.TrimSpace(t.Text); text != "" {
 		fields := strings.Fields(text)
-		if len(fields) > 0 && (fields[0] == "config" || (t.Trigger != "" && fields[0] == t.Trigger)) {
+		if len(fields) > 0 && (strings.EqualFold(fields[0], "config") || (t.Trigger != "" && strings.EqualFold(fields[0], t.Trigger))) {
 			fields = fields[1:]
 		}
 		return parseCommandFields(fields)

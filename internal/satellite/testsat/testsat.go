@@ -354,8 +354,8 @@ func stripTrigger(text, trigger string) string {
 	if len(fields) == 0 {
 		return text
 	}
-	switch fields[0] {
-	case "remind", "reminder", strings.TrimSpace(trigger):
+	switch strings.ToLower(fields[0]) {
+	case "remind", "reminder", strings.ToLower(strings.TrimSpace(trigger)):
 		return strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
 	}
 	return text

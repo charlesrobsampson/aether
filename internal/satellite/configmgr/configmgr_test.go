@@ -887,7 +887,7 @@ func TestConfigNoPrefix(t *testing.T) {
 	if err := manager.HandlePatch(sdk.Transmission{
 		Command: "set",
 		Trigger: "config",
-		Text:    `config set prefixes []`,
+		Text:    `Config Set prefixes []`,
 		Sender:  userPhone,
 	}); err != nil {
 		t.Fatalf("HandlePatch(prefixes []): %v", err)
@@ -909,7 +909,7 @@ func TestConfigNoPrefix(t *testing.T) {
 
 	if err := manager.Handle(sdk.Transmission{
 		Trigger: "config",
-		Text:    "config list",
+		Text:    "Config List",
 		Sender:  userPhone,
 	}); err != nil {
 		t.Fatalf("Handle(list): %v", err)
@@ -921,7 +921,7 @@ func TestConfigNoPrefix(t *testing.T) {
 	manager, recorder = readManager(t, cfg)
 	if err := manager.Handle(sdk.Transmission{
 		Trigger: "config",
-		Text:    "config export",
+		Text:    "Config Export",
 		Sender:  userPhone,
 	}); err != nil {
 		t.Fatalf("Handle(export): %v", err)

@@ -656,7 +656,7 @@ func parseAdminCommand(t sdk.Transmission) (string, string, error) {
 	if text != "" {
 		text = stripCommandPrefix(text)
 		fields := strings.Fields(text)
-		if len(fields) > 0 && (fields[0] == "admin" || (t.Trigger != "" && fields[0] == t.Trigger)) {
+		if len(fields) > 0 && (strings.EqualFold(fields[0], "admin") || (t.Trigger != "" && strings.EqualFold(fields[0], t.Trigger))) {
 			fields = fields[1:]
 		}
 		if len(fields) == 0 {
@@ -712,7 +712,7 @@ func parseAdminCommand(t sdk.Transmission) (string, string, error) {
 func parseTargetCommand(t sdk.Transmission, name string) (string, error) {
 	if text := strings.TrimSpace(t.Text); text != "" {
 		fields := strings.Fields(stripCommandPrefix(text))
-		if len(fields) > 0 && (fields[0] == name || (t.Trigger != "" && fields[0] == t.Trigger)) {
+		if len(fields) > 0 && (strings.EqualFold(fields[0], name) || (t.Trigger != "" && strings.EqualFold(fields[0], t.Trigger))) {
 			fields = fields[1:]
 		}
 		return strings.Join(fields, " "), nil
@@ -780,9 +780,9 @@ func isDigits(text string) bool {
 
 func stripCommandPrefix(text string) string {
 	text = strings.TrimSpace(text)
-	for _, prefix := range []string{"!", "/", "Aether ", "aether "} {
-		if strings.HasPrefix(text, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(text, prefix))
+	for _, prefix := range []string{"!", "/", "Aether "} {
+		if len(text) >= len(prefix) && strings.EqualFold(text[:len(prefix)], prefix) {
+			return strings.TrimSpace(text[len(prefix):])
 		}
 	}
 	return text

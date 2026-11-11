@@ -73,6 +73,11 @@ The same works with `!config set prefixes ""`. This overrides the system
 persona prefixes for that user; commands are then typed bare, for example
 `config list`.
 
+Command names, subcommands, satellite triggers, aliases, and prefixes are
+case-insensitive, so a phone that autocapitalizes the first word still works
+(`!Approve 2`, `Config List`, `Fly FPS`). Arguments and message text keep their
+original case.
+
 Maintainers resolve new senders with `!pending` (or `!admin list`),
 `!approve [id[,id...]|phone|uuid]`, and `!deny [id[,id...]|phone|uuid]`.
 `!pending` numbers each request, so `!approve 1,3,4` resolves a batch, and a
