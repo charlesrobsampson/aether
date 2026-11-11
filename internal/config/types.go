@@ -78,6 +78,7 @@ type AdminConfig struct {
 	ApprovedNumbers []string `json:"approved_numbers"`
 	DeniedNumbers   []string `json:"denied_numbers"`
 	ApprovedGroups  []string `json:"approved_groups"`
+	DeniedGroups    []string `json:"denied_groups"`
 }
 
 type MaintainerConfig struct {

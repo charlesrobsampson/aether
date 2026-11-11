@@ -19,11 +19,20 @@ const (
 	ApprovalExpired  = "expired"
 )
 
+// Approval kinds distinguish a sender request from a group request. A group
+// approval resolves into approved_groups; a number approval resolves into
+// approved_numbers.
+const (
+	ApprovalKindNumber = "number"
+	ApprovalKindGroup  = "group"
+)
+
 // ApprovalRecord is one row from the approvals table (plan §3.8). ResolvedAt
 // and ResolvedBy are zero/empty while the request is pending.
 type ApprovalRecord struct {
 	ID          int64
 	Phone       string
+	Kind        string
 	DisplayName string
 	Maintainer  string
 	Status      string
@@ -50,6 +59,13 @@ func (s *Store) InsertApproval(ctx context.Context, rec ApprovalRecord) (int64, 
 	if !validApprovalStatus(status) {
 		return 0, fmt.Errorf("store: invalid approval status %q", status)
 	}
+	kind := strings.TrimSpace(rec.Kind)
+	if kind == "" {
+		kind = ApprovalKindNumber
+	}
+	if !validApprovalKind(kind) {
+		return 0, fmt.Errorf("store: invalid approval kind %q", kind)
+	}
 
 	requestedAt := rec.RequestedAt
 	if requestedAt.IsZero() {
@@ -67,11 +83,11 @@ func (s *Store) InsertApproval(ctx context.Context, rec ApprovalRecord) (int64, 
 
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO approvals
-			(phone, maintainer, status, requested_at, resolved_at, resolved_by, display_name)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			(phone, maintainer, status, requested_at, resolved_at, resolved_by, display_name, kind)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.Phone, rec.Maintainer, status,
 		requestedAt.UTC().Format(time.RFC3339), resolvedAt, resolvedBy,
-		strings.TrimSpace(rec.DisplayName),
+		strings.TrimSpace(rec.DisplayName), kind,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("store: insert approval for %q: %w", rec.Phone, err)
@@ -95,7 +111,7 @@ func (s *Store) PendingApproval(ctx context.Context, phone string) (*ApprovalRec
 	}
 
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, phone, maintainer, display_name, status, requested_at,
+		SELECT id, phone, maintainer, display_name, kind, status, requested_at,
 		       COALESCE(resolved_at, ''), COALESCE(resolved_by, '')
 		FROM approvals
 		WHERE phone = ? AND status = ?
@@ -119,7 +135,7 @@ func (s *Store) PendingApprovals(ctx context.Context) ([]ApprovalRecord, error) 
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, phone, maintainer, display_name, status, requested_at,
+		SELECT id, phone, maintainer, display_name, kind, status, requested_at,
 		       COALESCE(resolved_at, ''), COALESCE(resolved_by, '')
 		FROM approvals
 		WHERE status = ?
@@ -268,6 +284,15 @@ func validApprovalStatus(status string) bool {
 	}
 }
 
+func validApprovalKind(kind string) bool {
+	switch kind {
+	case ApprovalKindNumber, ApprovalKindGroup:
+		return true
+	default:
+		return false
+	}
+}
+
 type approvalScanner interface {
 	Scan(dest ...any) error
 }
@@ -276,7 +301,7 @@ func scanApproval(row approvalScanner) (ApprovalRecord, error) {
 	var rec ApprovalRecord
 	var requestedAt, resolvedAt string
 	if err := row.Scan(
-		&rec.ID, &rec.Phone, &rec.Maintainer, &rec.DisplayName, &rec.Status,
+		&rec.ID, &rec.Phone, &rec.Maintainer, &rec.DisplayName, &rec.Kind, &rec.Status,
 		&requestedAt, &resolvedAt, &rec.ResolvedBy,
 	); err != nil {
 		return ApprovalRecord{}, err

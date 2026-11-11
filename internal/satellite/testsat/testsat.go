@@ -326,7 +326,7 @@ func (m *Manager) send(t sdk.Transmission, text string) error {
 	}
 
 	return m.client.Send(context.Background(), sdk.Response{
-		Recipients: []string{t.Sender},
+		Recipients: []string{t.ReplyTo()},
 		Text:       text,
 		Satellite:  satellite,
 		ThreadID:   t.ThreadID,

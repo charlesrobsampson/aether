@@ -46,7 +46,6 @@ func TestReceiveHandler(t *testing.T) {
 			Sender:    sender,
 			Text:      text,
 			Provider:  "signal",
-			GroupID:   "group-1",
 			MessageID: "upstream-1",
 		})
 		if err != nil {
@@ -187,7 +186,7 @@ func TestReceiveHandler(t *testing.T) {
 					t.Errorf("handled sender = %q, want %q", got.Sender, tc.wantSender)
 				}
 				if got.Text != "!test" || got.Provider != "signal" ||
-					got.GroupID != "group-1" || got.MessageID != "upstream-1" {
+					got.MessageID != "upstream-1" {
 					t.Errorf("handled payload = %+v, want the full inbound envelope", got)
 				}
 			}
@@ -615,6 +614,88 @@ func TestReceiveMetrics(t *testing.T) {
 			if tc.wantResult == metrics.ReceiveQueueFull {
 				if got := registry.QueueFull(metrics.QueueInbound); got != 1 {
 					t.Errorf("queue_full_total{queue=inbound} = %d, want 1", got)
+				}
+			}
+		})
+	}
+}
+
+// TestReceiveGroupAuthorization proves an approved sender in an unapproved
+// group creates exactly one group approval request, while approved groups
+// dispatch and denied groups are dropped silently.
+func TestReceiveGroupAuthorization(t *testing.T) {
+	const (
+		approved = "+15555550102"
+		groupID  = "group.FyZ5D/fEjYhE0+7AvLZgAD3w88fRJ08xx1otqxDCVZE="
+	)
+
+	tests := []struct {
+		name        string
+		approved    []string
+		denied      []string
+		wantHandled int
+		wantGroup   int
+	}{
+		{name: "unapproved group requests approval", wantGroup: 1},
+		{name: "approved group dispatches", approved: []string{groupID}, wantHandled: 1},
+		{name: "denied group drops silently", denied: []string{groupID}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := func() *config.Config {
+				return &config.Config{Admin: config.AdminConfig{
+					ApprovedNumbers: []string{approved},
+					ApprovedGroups:  tc.approved,
+					DeniedGroups:    tc.denied,
+				}}
+			}
+			var (
+				handled []model.Inbound
+				groups  []UnknownGroup
+			)
+			handler := NewReceiveHandler(ReceiveOptions{
+				Config: cfg,
+				Handle: func(_ context.Context, msg model.Inbound) error {
+					handled = append(handled, msg)
+					return nil
+				},
+				OnUnknownGroup: func(group UnknownGroup) {
+					groups = append(groups, group)
+				},
+			})
+
+			raw, err := json.Marshal(model.Inbound{
+				Sender:     approved,
+				Text:       "@Aether !test",
+				Provider:   "signal",
+				GroupID:    groupID,
+				GroupName:  "Test Group",
+				MentionsMe: true,
+				MessageID:  "group-msg-1",
+			})
+			if err != nil {
+				t.Fatalf("marshal inbound: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/receive", strings.NewReader(string(raw)))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202 (body %q)", rec.Code, rec.Body.String())
+			}
+			if len(handled) != tc.wantHandled {
+				t.Fatalf("handled = %d, want %d", len(handled), tc.wantHandled)
+			}
+			if len(groups) != tc.wantGroup {
+				t.Fatalf("group approval calls = %d, want %d: %+v", len(groups), tc.wantGroup, groups)
+			}
+			if tc.wantGroup == 1 {
+				got := groups[0]
+				if got.GroupID != groupID || got.Name != "Test Group" ||
+					got.Sender != approved || got.SenderName != "" {
+					t.Errorf("unknown group = %+v, want group id, name, and sender", got)
 				}
 			}
 		})

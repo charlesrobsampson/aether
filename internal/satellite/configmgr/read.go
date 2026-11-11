@@ -410,7 +410,7 @@ func (m *Manager) send(t sdk.Transmission, text string) error {
 	if m == nil || m.out == nil {
 		return statusError(http.StatusServiceUnavailable, "config: outbound client is not configured")
 	}
-	recipient := strings.TrimSpace(t.Sender)
+	recipient := t.ReplyTo()
 	if recipient == "" {
 		return statusError(http.StatusUnauthorized, "config: sender is required")
 	}

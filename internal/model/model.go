@@ -8,7 +8,12 @@ type Inbound struct {
 	Text      string `json:"text"`
 	Provider  string `json:"provider,omitempty"`
 	GroupID   string `json:"group_id,omitempty"`
-	MessageID string `json:"message_id,omitempty"`
+	GroupName string `json:"group_name,omitempty"`
+	// MentionsMe reports that the transport detected a native mention of the
+	// bot account. Signal renders mentions as an invisible placeholder, so
+	// this flag is authoritative for groups.
+	MentionsMe bool   `json:"mentions_me,omitempty"`
+	MessageID  string `json:"message_id,omitempty"`
 	// SenderName is the transport's display name for the sender, when known.
 	SenderName string `json:"sender_name,omitempty"`
 	// SenderNumber is the sender's phone number when the transport supplies it

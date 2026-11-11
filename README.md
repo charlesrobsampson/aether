@@ -78,12 +78,21 @@ case-insensitive, so a phone that autocapitalizes the first word still works
 (`!Approve 2`, `Config List`, `Fly FPS`). Arguments and message text keep their
 original case.
 
-Maintainers resolve new senders with `!pending` (or `!admin list`),
-`!approve [id[,id...]|phone|uuid]`, and `!deny [id[,id...]|phone|uuid]`.
-`!pending` numbers each request, so `!approve 1,3,4` resolves a batch, and a
-bare `!approve` resolves the newest pending request. Notifications include the
-short row ID and the sender's name and phone number when Signal exposes them.
-Admins can use `!admin add|remove <phone|uuid>`.
+Maintainers resolve new senders and groups with `!pending` (or `!admin list`),
+`!approve [id[,id...]|phone|uuid|group]`, and
+`!deny [id[,id...]|phone|uuid|group]`. `!pending` numbers each request, so
+`!approve 1,3,4` resolves a batch, and a bare `!approve` resolves the newest
+pending request. Notifications include the short row ID and the sender's name
+and phone number when Signal exposes them. Approving a group writes
+`approved_groups`; denying one writes `denied_groups`. Admins can use
+`!admin add|remove <phone|uuid>`.
+
+Group messages answer in the group by default. A satellite can still address
+an individual explicitly by using that recipient in its response. In a group
+the bot only responds when it is mentioned with `@` (Signal's native mention
+or a literal `@<persona name>`); other group messages are ignored. An approved
+sender's first message in an unapproved group creates a group approval request
+instead of dispatching.
 
 ## Documentation
 

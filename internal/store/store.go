@@ -324,6 +324,13 @@ func (s *Store) migrate() error {
 		tx.Rollback()
 		return fmt.Errorf("store: migrate: %w", err)
 	}
+	// Approvals gained a kind so a group request can be resolved into
+	// approved_groups instead of approved_numbers. Older rows are numbers.
+	if err := addColumnIfMissing(tx, "approvals", "kind",
+		`ALTER TABLE approvals ADD COLUMN kind TEXT NOT NULL DEFAULT 'number'`); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("store: migrate: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit migrations: %w", err)
 	}
@@ -424,7 +431,8 @@ var migrations = []string{
 		requested_at TEXT NOT NULL,
 		resolved_at  TEXT,
 		resolved_by  TEXT,
-		display_name TEXT NOT NULL DEFAULT ''
+		display_name TEXT NOT NULL DEFAULT '',
+		kind         TEXT NOT NULL DEFAULT 'number'
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_approvals_phone_status ON approvals (phone, status)`,
 }

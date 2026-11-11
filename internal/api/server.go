@@ -42,6 +42,9 @@ type ServerOptions struct {
 	// OnUnknown is called once for a sender who is neither approved nor
 	// denied.
 	OnUnknown func(UnknownSender)
+	// OnUnknownGroup is called once for a group that is neither approved nor
+	// denied.
+	OnUnknownGroup func(UnknownGroup)
 	// Queue receives outbound jobs from /message.
 	Queue Enqueuer
 	// Sessions applies session lifecycle actions from /message. Nil leaves
@@ -66,12 +69,13 @@ func NewServer(options ServerOptions) http.Handler {
 
 	mux := http.NewServeMux()
 	mux.Handle("POST /receive", NewReceiveHandler(ReceiveOptions{
-		Config:    options.Config,
-		Handle:    options.Inbound,
-		Claim:     options.Claim,
-		Release:   options.Release,
-		OnUnknown: options.OnUnknown,
-		Metrics:   registry,
+		Config:         options.Config,
+		Handle:         options.Inbound,
+		Claim:          options.Claim,
+		Release:        options.Release,
+		OnUnknown:      options.OnUnknown,
+		OnUnknownGroup: options.OnUnknownGroup,
+		Metrics:        registry,
 	}))
 	mux.Handle("POST /message", NewMessageHandler(MessageOptions{
 		Config:   options.Config,

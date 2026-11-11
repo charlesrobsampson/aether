@@ -8,6 +8,19 @@ import (
 	"testing"
 )
 
+// TestTransmissionReplyTo proves group messages answer in the group while
+// direct messages answer the sender.
+func TestTransmissionReplyTo(t *testing.T) {
+	group := Transmission{Sender: "+15555550102", GroupID: "group.example"}
+	if got := group.ReplyTo(); got != "group.example" {
+		t.Fatalf("group ReplyTo() = %q, want group.example", got)
+	}
+	direct := Transmission{Sender: "+15555550102"}
+	if got := direct.ReplyTo(); got != "+15555550102" {
+		t.Fatalf("direct ReplyTo() = %q, want the sender", got)
+	}
+}
+
 // TestSDKWebhook covers the contract satellites rely on when Aether dispatches
 // a command: the transmission envelope, request validation, and the response
 // helper used to answer Aether.

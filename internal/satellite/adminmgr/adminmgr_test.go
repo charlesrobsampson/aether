@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -798,5 +799,85 @@ func TestPendingShowsNamesAndBatchHint(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("pending text %q does not contain %q", text, want)
 		}
+	}
+}
+
+// TestGroupApprovalFlow covers group request creation, notification wording,
+// approval by row ID, denial by raw group ID, and the separate admin lists.
+func TestGroupApprovalFlow(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, []string{maintainerPhone1}, true)
+
+	const (
+		groupOne = "group.FyZ5D/fEjYhE0+7AvLZgAD3w88fRJ08xx1otqxDCVZE="
+		groupTwo = "group.secondExample=="
+	)
+
+	if err := f.manager.RequestGroupApproval(ctx, groupOne, "Sailing Crew", userPhone); err != nil {
+		t.Fatalf("RequestGroupApproval(%s): %v", groupOne, err)
+	}
+	pending, err := f.store.PendingApproval(ctx, groupOne)
+	if err != nil {
+		t.Fatalf("PendingApproval(%s): %v", groupOne, err)
+	}
+	if pending == nil || pending.Kind != store.ApprovalKindGroup || pending.DisplayName != "Sailing Crew" {
+		t.Fatalf("pending group = %+v, want kind group and display name", pending)
+	}
+
+	jobs := f.queue.Jobs()
+	if len(jobs) != 1 {
+		t.Fatalf("notification jobs = %d, want 1", len(jobs))
+	}
+	for _, want := range []string{"group access request", groupOne, "Sailing Crew", userPhone, "!approve"} {
+		if !strings.Contains(jobs[0].Text, want) {
+			t.Fatalf("group notification %q does not contain %q", jobs[0].Text, want)
+		}
+	}
+
+	if err := f.manager.HandleApprove(sdk.Transmission{
+		Trigger: "approve",
+		Text:    "!approve #" + strconv.FormatInt(pending.ID, 10),
+		Sender:  maintainerPhone1,
+	}); err != nil {
+		t.Fatalf("HandleApprove(group): %v", err)
+	}
+
+	admin := f.admin(t)
+	if !contains(admin.ApprovedGroups, groupOne) {
+		t.Fatalf("approved_groups = %v, want %s", admin.ApprovedGroups, groupOne)
+	}
+	if contains(admin.ApprovedNumbers, groupOne) {
+		t.Fatalf("approved_numbers = %v must not contain the group id", admin.ApprovedNumbers)
+	}
+
+	if err := f.manager.RequestGroupApproval(ctx, groupTwo, "Second Group", userPhone); err != nil {
+		t.Fatalf("RequestGroupApproval(%s): %v", groupTwo, err)
+	}
+	if err := f.manager.HandleDeny(sdk.Transmission{
+		Trigger: "deny",
+		Text:    "!deny " + groupTwo,
+		Sender:  maintainerPhone1,
+	}); err != nil {
+		t.Fatalf("HandleDeny(group): %v", err)
+	}
+
+	admin = f.admin(t)
+	if !contains(admin.DeniedGroups, groupTwo) {
+		t.Fatalf("denied_groups = %v, want %s", admin.DeniedGroups, groupTwo)
+	}
+	if contains(admin.ApprovedGroups, groupTwo) {
+		t.Fatalf("approved_groups = %v must not contain denied %s", admin.ApprovedGroups, groupTwo)
+	}
+
+	if err := f.manager.HandlePending(sdk.Transmission{
+		Trigger: "pending",
+		Text:    "!pending",
+		Sender:  maintainerPhone1,
+	}); err != nil {
+		t.Fatalf("HandlePending: %v", err)
+	}
+	responses := f.out.Responses()
+	if len(responses) != 1 || !strings.Contains(responses[0].Text, "No pending access requests.") {
+		t.Fatalf("pending after resolution = %+v, want none", responses)
 	}
 }

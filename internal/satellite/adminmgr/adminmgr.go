@@ -161,6 +161,18 @@ func (m *Manager) RequestApproval(ctx context.Context, identity string) error {
 // notifying again. Expired pending rows are marked expired first, so a later
 // message starts a fresh request.
 func (m *Manager) RequestApprovalFrom(ctx context.Context, identity, displayName string) error {
+	return m.requestApproval(ctx, identity, store.ApprovalKindNumber, displayName, "")
+}
+
+// RequestGroupApproval records one unapproved-group request. groupName and
+// requester only enrich the maintainer notification; groupID is the identity
+// that an approval writes to approved_groups. It is idempotent while a request
+// is pending.
+func (m *Manager) RequestGroupApproval(ctx context.Context, groupID, groupName, requester string) error {
+	return m.requestApproval(ctx, groupID, store.ApprovalKindGroup, groupName, requester)
+}
+
+func (m *Manager) requestApproval(ctx context.Context, identity, kind, displayName, requester string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -173,23 +185,39 @@ func (m *Manager) RequestApprovalFrom(ctx context.Context, identity, displayName
 	}
 
 	identity = strings.TrimSpace(identity)
-	if !auth.ValidIdentity(identity) {
-		return statusError(http.StatusBadRequest, "admin: invalid sender %q", identity)
+	switch kind {
+	case store.ApprovalKindNumber:
+		if !auth.ValidIdentity(identity) {
+			return statusError(http.StatusBadRequest, "admin: invalid sender %q", identity)
+		}
+	case store.ApprovalKindGroup:
+		if identity == "" {
+			return statusError(http.StatusBadRequest, "admin: invalid group %q", identity)
+		}
+	default:
+		return statusError(http.StatusInternalServerError, "admin: unsupported approval kind %q", kind)
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// A denied sender stays denied and an existing user/admin/maintainer needs
-	// no approval. Direct callers therefore cannot create noise for known
-	// senders.
+	// A denied identity stays denied and an existing user/admin/maintainer or
+	// approved group needs no approval. Direct callers therefore cannot create
+	// noise for known identities.
 	admin := m.loadAdmin(cfg)
 	maintainerState := m.loadMaintainer(cfg)
-	if hasString(admin.DeniedNumbers, identity) ||
-		hasString(admin.ApprovedNumbers, identity) ||
-		hasString(admin.Admins, identity) ||
-		hasString(maintainerState.Maintainers, identity) {
-		return nil
+	switch kind {
+	case store.ApprovalKindNumber:
+		if hasString(admin.DeniedNumbers, identity) ||
+			hasString(admin.ApprovedNumbers, identity) ||
+			hasString(admin.Admins, identity) ||
+			hasString(maintainerState.Maintainers, identity) {
+			return nil
+		}
+	case store.ApprovalKindGroup:
+		if hasString(admin.DeniedGroups, identity) || hasString(admin.ApprovedGroups, identity) {
+			return nil
+		}
 	}
 
 	now := m.now()
@@ -209,6 +237,7 @@ func (m *Manager) RequestApprovalFrom(ctx context.Context, identity, displayName
 	displayName = strings.TrimSpace(displayName)
 	id, err := m.store.InsertApproval(ctx, store.ApprovalRecord{
 		Phone:       identity,
+		Kind:        kind,
 		DisplayName: displayName,
 		Maintainer:  maintainer,
 		Status:      store.ApprovalPending,
@@ -229,9 +258,13 @@ func (m *Manager) RequestApprovalFrom(ctx context.Context, identity, displayName
 	if maintainerState.NotifyApprovals && maintainer != "" && m.queue != nil {
 		// Notification is best-effort: the pending row is the source of truth
 		// and can still be listed or resolved if the queue is shutting down.
+		text := approvalNotification(id, identity, displayName)
+		if kind == store.ApprovalKindGroup {
+			text = groupApprovalNotification(id, identity, displayName, requester)
+		}
 		_ = m.queue.Enqueue(queue.Job{
 			Recipient: maintainer,
-			Text:      approvalNotification(id, identity, displayName),
+			Text:      text,
 		})
 	}
 	return nil
@@ -419,18 +452,24 @@ func (m *Manager) resolveApprovalRefs(ctx context.Context, actor, raw, status st
 	}
 
 	byID := make(map[int64]store.ApprovalRecord, len(pending))
+	kindByIdentity := make(map[string]string, len(pending))
 	for _, rec := range pending {
 		byID[rec.ID] = rec
+		kindByIdentity[rec.Phone] = rec.Kind
 	}
 
 	var (
-		identities []string
-		ids        []int64
-		missing    []string
+		targets []approvalTarget
+		ids     []int64
+		missing []string
 	)
 	for _, ref := range refs {
 		if ref.id == 0 {
-			identities = append(identities, ref.identity)
+			kind := kindByIdentity[ref.identity]
+			if kind == "" {
+				kind = inferApprovalKind(ref.identity)
+			}
+			targets = append(targets, approvalTarget{identity: ref.identity, kind: kind})
 			continue
 		}
 		rec, ok := byID[ref.id]
@@ -438,8 +477,12 @@ func (m *Manager) resolveApprovalRefs(ctx context.Context, actor, raw, status st
 			missing = append(missing, fmt.Sprintf("#%d", ref.id))
 			continue
 		}
+		kind := rec.Kind
+		if kind == "" {
+			kind = store.ApprovalKindNumber
+		}
 		ids = append(ids, ref.id)
-		identities = append(identities, rec.Phone)
+		targets = append(targets, approvalTarget{identity: rec.Phone, kind: kind})
 	}
 	if len(missing) > 0 {
 		return statusError(http.StatusBadRequest, "admin: no pending request %s", strings.Join(missing, ", "))
@@ -447,22 +490,51 @@ func (m *Manager) resolveApprovalRefs(ctx context.Context, actor, raw, status st
 
 	admin := m.loadAdmin(cfg)
 	var changed bool
-	for _, identity := range dedupeStrings(identities) {
-		switch status {
-		case store.ApprovalApproved:
-			admin.DeniedNumbers, changed = removeStringChanged(admin.DeniedNumbers, identity, changed)
-			if !hasString(admin.ApprovedNumbers, identity) {
-				admin.ApprovedNumbers = append(admin.ApprovedNumbers, identity)
-				changed = true
+	seen := make(map[string]bool, len(targets))
+	for _, target := range targets {
+		key := target.kind + "\x00" + target.identity
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		identity := target.identity
+		switch target.kind {
+		case store.ApprovalKindGroup:
+			switch status {
+			case store.ApprovalApproved:
+				admin.DeniedGroups, changed = removeStringChanged(admin.DeniedGroups, identity, changed)
+				if !hasString(admin.ApprovedGroups, identity) {
+					admin.ApprovedGroups = append(admin.ApprovedGroups, identity)
+					changed = true
+				}
+			case store.ApprovalDenied:
+				admin.ApprovedGroups, changed = removeStringChanged(admin.ApprovedGroups, identity, changed)
+				if !hasString(admin.DeniedGroups, identity) {
+					admin.DeniedGroups = append(admin.DeniedGroups, identity)
+					changed = true
+				}
+			default:
+				return statusError(http.StatusInternalServerError, "admin: unsupported approval status %q", status)
 			}
-		case store.ApprovalDenied:
-			admin.ApprovedNumbers, changed = removeStringChanged(admin.ApprovedNumbers, identity, changed)
-			if !hasString(admin.DeniedNumbers, identity) {
-				admin.DeniedNumbers = append(admin.DeniedNumbers, identity)
-				changed = true
+		case store.ApprovalKindNumber:
+			switch status {
+			case store.ApprovalApproved:
+				admin.DeniedNumbers, changed = removeStringChanged(admin.DeniedNumbers, identity, changed)
+				if !hasString(admin.ApprovedNumbers, identity) {
+					admin.ApprovedNumbers = append(admin.ApprovedNumbers, identity)
+					changed = true
+				}
+			case store.ApprovalDenied:
+				admin.ApprovedNumbers, changed = removeStringChanged(admin.ApprovedNumbers, identity, changed)
+				if !hasString(admin.DeniedNumbers, identity) {
+					admin.DeniedNumbers = append(admin.DeniedNumbers, identity)
+					changed = true
+				}
+			default:
+				return statusError(http.StatusInternalServerError, "admin: unsupported approval status %q", status)
 			}
 		default:
-			return statusError(http.StatusInternalServerError, "admin: unsupported approval status %q", status)
+			return statusError(http.StatusInternalServerError, "admin: unsupported approval kind %q", target.kind)
 		}
 	}
 	if changed {
@@ -476,11 +548,11 @@ func (m *Manager) resolveApprovalRefs(ctx context.Context, actor, raw, status st
 			return statusError(http.StatusInternalServerError, "admin: resolve requests: %v", err)
 		}
 	}
-	// A phone/UUID target may refer to a request that was not in the pending
-	// set (for example an old row already resolved). Resolving it is a no-op,
-	// which keeps repeated approvals idempotent.
-	for _, identity := range identities {
-		if _, err := m.store.ResolveApprovals(ctx, identity, status, actor, now); err != nil {
+	// A phone/UUID/group target may refer to a request that was not in the
+	// pending set (for example an old row already resolved). Resolving it is a
+	// no-op, which keeps repeated approvals idempotent.
+	for _, target := range targets {
+		if _, err := m.store.ResolveApprovals(ctx, target.identity, status, actor, now); err != nil {
 			return statusError(http.StatusInternalServerError, "admin: resolve request: %v", err)
 		}
 	}
@@ -593,6 +665,21 @@ func approvalNotification(id int64, identity, displayName string) string {
 	)
 }
 
+func groupApprovalNotification(id int64, groupID, groupName, requester string) string {
+	who := groupID
+	if name := strings.TrimSpace(groupName); name != "" && name != groupID {
+		who = fmt.Sprintf("%s (%s)", name, groupID)
+	}
+	from := ""
+	if requester = strings.TrimSpace(requester); requester != "" {
+		from = fmt.Sprintf(" for a message from %s", requester)
+	}
+	return fmt.Sprintf(
+		`New Aether group access request #%d%s: %s. Reply "!approve %d" or "!deny %d".`,
+		id, from, who, id, id,
+	)
+}
+
 // renderPending formats the pending queue as text. Identities may be phone
 // numbers or Signal UUIDs; row IDs are short references accepted by !approve
 // and !deny, including as a comma-separated batch.
@@ -604,6 +691,9 @@ func renderPending(records []store.ApprovalRecord) string {
 	b.WriteString("Pending access requests:\n")
 	for _, rec := range records {
 		fmt.Fprintf(&b, "  #%d %s", rec.ID, approvalLabel(rec))
+		if rec.Kind == store.ApprovalKindGroup {
+			b.WriteString(" [group]")
+		}
 		if rec.Maintainer != "" {
 			fmt.Fprintf(&b, " (assigned to %s)", rec.Maintainer)
 		}
@@ -633,7 +723,7 @@ func (m *Manager) send(t sdk.Transmission, text string) error {
 	if m == nil || m.out == nil {
 		return statusError(http.StatusServiceUnavailable, "admin: outbound client is not configured")
 	}
-	recipient := strings.TrimSpace(t.Sender)
+	recipient := t.ReplyTo()
 	if recipient == "" {
 		return statusError(http.StatusUnauthorized, "admin: sender is required")
 	}
@@ -728,10 +818,25 @@ func parseTargetCommand(t sdk.Transmission, name string) (string, error) {
 	return target, nil
 }
 
-// approvalRef is either a pending-row ID or a phone/UUID identity.
+// approvalRef is either a pending-row ID or a phone/UUID/group identity.
 type approvalRef struct {
 	id       int64
 	identity string
+}
+
+// approvalTarget pairs an identity with the list it belongs to. Row IDs carry
+// the kind from the stored record; raw identities are looked up in the pending
+// set first and otherwise inferred from the Signal group prefix.
+type approvalTarget struct {
+	identity string
+	kind     string
+}
+
+func inferApprovalKind(identity string) string {
+	if strings.HasPrefix(strings.TrimSpace(identity), "group.") {
+		return store.ApprovalKindGroup
+	}
+	return store.ApprovalKindNumber
 }
 
 // parseApprovalRefs accepts "1", "1,3,4", "1 3 4", "+15551234567", or a
@@ -758,7 +863,7 @@ func parseApprovalRefs(raw string) ([]approvalRef, error) {
 			refs = append(refs, approvalRef{id: id})
 			continue
 		}
-		if !auth.ValidIdentity(field) {
+		if !auth.ValidIdentity(field) && !strings.HasPrefix(field, "group.") {
 			return nil, statusError(http.StatusBadRequest, "admin: invalid approval target %q", field)
 		}
 		refs = append(refs, approvalRef{identity: field})

@@ -53,6 +53,16 @@ type UnknownSender struct {
 	Number string
 }
 
+// UnknownGroup describes a group that is neither approved nor denied. Name and
+// Sender make the maintainer notification more useful; GroupID is the identity
+// that an approval writes to admin.json's approved_groups.
+type UnknownGroup struct {
+	GroupID    string
+	Name       string
+	Sender     string
+	SenderName string
+}
+
 // ReceiveOptions configures the /receive handler.
 type ReceiveOptions struct {
 	// Config returns the active configuration. A getter rather than a value
@@ -74,6 +84,10 @@ type ReceiveOptions struct {
 	// denied. Deduplication against pending approvals belongs to the
 	// admin-manager.
 	OnUnknown func(UnknownSender)
+	// OnUnknownGroup is called once for a group that is neither approved nor
+	// denied. Deduplication against pending approvals belongs to the
+	// admin-manager.
+	OnUnknownGroup func(UnknownGroup)
 	// Metrics receives receive outcome counters. Nil selects the
 	// process-wide default registry.
 	Metrics *metrics.Registry
@@ -133,6 +147,23 @@ func (h *receiveHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Sender: inbound.Sender,
 				Name:   inbound.SenderName,
 				Number: inbound.SenderNumber,
+			})
+		}
+		h.options.Metrics.IncReceiveRequest(metrics.ReceiveAccepted)
+		w.WriteHeader(http.StatusAccepted)
+	case strings.TrimSpace(inbound.GroupID) != "" && auth.GroupDenied(cfg, inbound.GroupID):
+		// A denied group is dropped silently, just like a denied sender.
+		h.options.Metrics.IncReceiveRequest(metrics.ReceiveAccepted)
+		w.WriteHeader(http.StatusAccepted)
+	case strings.TrimSpace(inbound.GroupID) != "" && !auth.GroupApproved(cfg, inbound.GroupID):
+		// An approved sender in a new group asks the maintainer to approve the
+		// group. The message is not dispatched until it is approved.
+		if h.options.OnUnknownGroup != nil {
+			h.options.OnUnknownGroup(UnknownGroup{
+				GroupID:    inbound.GroupID,
+				Name:       inbound.GroupName,
+				Sender:     inbound.Sender,
+				SenderName: inbound.SenderName,
 			})
 		}
 		h.options.Metrics.IncReceiveRequest(metrics.ReceiveAccepted)

@@ -53,6 +53,18 @@ func IsDenied(cfg *config.Config, phone string) bool {
 	return cfg != nil && phone != "" && contains(cfg.Admin.DeniedNumbers, phone)
 }
 
+// GroupApproved reports whether groupID is listed in admin.json's
+// approved_groups. Signal group identifiers are opaque and matched literally.
+func GroupApproved(cfg *config.Config, groupID string) bool {
+	return cfg != nil && groupID != "" && contains(cfg.Admin.ApprovedGroups, groupID)
+}
+
+// GroupDenied reports whether groupID is explicitly listed in admin.json's
+// denied_groups.
+func GroupDenied(cfg *config.Config, groupID string) bool {
+	return cfg != nil && groupID != "" && contains(cfg.Admin.DeniedGroups, groupID)
+}
+
 func contains(list []string, value string) bool {
 	for _, item := range list {
 		if item == value {

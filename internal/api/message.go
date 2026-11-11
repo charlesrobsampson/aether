@@ -116,7 +116,7 @@ func (h *messageHandler) handle(w http.ResponseWriter, r *http.Request, cfg *con
 	// must be approved; otherwise it is dropped silently like a denied
 	// recipient.
 	if strings.TrimSpace(outbound.GroupChatID) != "" {
-		if !groupApproved(cfg, outbound.GroupChatID) {
+		if !auth.GroupApproved(cfg, outbound.GroupChatID) {
 			w.WriteHeader(http.StatusAccepted)
 			return
 		}
@@ -173,17 +173,6 @@ func (h *messageHandler) enqueueBatch(w http.ResponseWriter, jobs []queue.Job) b
 		return false
 	}
 	return true
-}
-
-// groupApproved reports whether groupID appears verbatim in admin.json's
-// approved_groups. Group identifiers are opaque and matched literally.
-func groupApproved(cfg *config.Config, groupID string) bool {
-	for _, approved := range cfg.Admin.ApprovedGroups {
-		if approved == groupID {
-			return true
-		}
-	}
-	return false
 }
 
 func (h *messageHandler) config() *config.Config {

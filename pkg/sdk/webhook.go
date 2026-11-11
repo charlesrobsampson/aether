@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strings"
 )
 
 // maxWebhookBody bounds a satellite webhook request. The dispatch envelope is
@@ -25,6 +26,10 @@ type Transmission struct {
 	ThreadID  string         `json:"thread_id,omitempty"`
 	MessageID string         `json:"message_id,omitempty"`
 	GroupID   string         `json:"group_id,omitempty"`
+	GroupName string         `json:"group_name,omitempty"`
+	// MentionsMe reports that the transport detected a native mention of the
+	// bot account.
+	MentionsMe bool `json:"mentions_me,omitempty"`
 	// SenderName and SenderNumber carry the transport's display name and
 	// E.164 number when they are known separately from Sender.
 	SenderName   string `json:"sender_name,omitempty"`
@@ -32,6 +37,16 @@ type Transmission struct {
 	// TimestampMS is the provider timestamp of the inbound message. Reactions
 	// use it as the target, so zero means the provider did not supply one.
 	TimestampMS int64 `json:"timestamp_ms,omitempty"`
+}
+
+// ReplyTo returns the conversation a response should target. Group messages
+// answer in the group; direct messages answer the sender. Satellites that need
+// an explicit individual target should use Sender instead.
+func (t Transmission) ReplyTo() string {
+	if group := strings.TrimSpace(t.GroupID); group != "" {
+		return group
+	}
+	return strings.TrimSpace(t.Sender)
 }
 
 // SessionAction accompanies a Response that changes conversation state.
@@ -44,7 +59,10 @@ type SessionAction struct {
 // the same JSON tags as internal/model.Outbound (plan §3.3 and §3.11).
 type Response struct {
 	Recipients []string `json:"recipients"`
-	Text       string   `json:"text,omitempty"`
+	// GroupChatID targets one group conversation instead of individual
+	// recipients. It is mutually exclusive with Recipients.
+	GroupChatID string `json:"group_chat_id,omitempty"`
+	Text        string `json:"text,omitempty"`
 	// Format selects provider-native text formatting. Empty or "plain" sends
 	// literal text; "styled" asks the provider to render its markup (for
 	// Signal: *bold*, _italic_, ~strike~, ||spoiler||, and `monospace`).

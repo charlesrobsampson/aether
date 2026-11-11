@@ -39,6 +39,8 @@ type transmission struct {
 	ThreadID    string         `json:"thread_id,omitempty"`
 	MessageID   string         `json:"message_id,omitempty"`
 	GroupID     string         `json:"group_id,omitempty"`
+	GroupName   string         `json:"group_name,omitempty"`
+	MentionsMe  bool           `json:"mentions_me,omitempty"`
 	TimestampMS int64          `json:"timestamp_ms,omitempty"`
 }
 
@@ -69,6 +71,26 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 		return
 	}
 
+	rawText := in.Text
+	// Group messages must mention the bot before it responds. Signal reports a
+	// native mention through MentionsMe and renders the mention itself as an
+	// invisible placeholder; other transports may send a literal @Name.
+	if strings.TrimSpace(in.GroupID) != "" {
+		mentionText, textMention := stripGroupMention(rawText, cfg.System.Persona.Name)
+		if !in.MentionsMe && !textMention {
+			r.record(ctx, store.RouteLog{
+				Direction: "inbound",
+				MessageID: in.MessageID,
+				Sender:    in.Sender,
+				Text:      rawText,
+				Status:    "dropped",
+				Error:     "group message without mention",
+			})
+			return
+		}
+		rawText = mentionText
+	}
+
 	user := cfg.Users[in.Sender]
 	systemPrefixes := cfg.System.Persona.Prefixes
 	// An explicitly empty user prefix list means the user opted out of
@@ -76,8 +98,8 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 	if user.Prefixes != nil && onlyEmptyPrefixes(user.Prefixes) {
 		systemPrefixes = nil
 	}
-	prefix, prefixed := matchedPrefix(in.Text, systemPrefixes, user.Prefixes)
-	text := stripPrefixes(in.Text, systemPrefixes, user.Prefixes)
+	prefix, prefixed := matchedPrefix(rawText, systemPrefixes, user.Prefixes)
+	text := stripPrefixes(rawText, systemPrefixes, user.Prefixes)
 	if text == "" {
 		r.record(ctx, store.RouteLog{
 			Direction: "inbound",
@@ -297,6 +319,8 @@ func (r *Router) dispatchRoute(ctx context.Context, in model.Inbound, route conf
 			ThreadID:    threadID,
 			MessageID:   in.MessageID,
 			GroupID:     in.GroupID,
+			GroupName:   in.GroupName,
+			MentionsMe:  in.MentionsMe,
 			TimestampMS: in.TimestampMS,
 		}
 		if err := r.post(ctx, route.Endpoint, command.Path, envelope); err != nil {
@@ -618,6 +642,47 @@ func routesFromConfig(cfg *config.Config) []config.RouteEntry {
 		})
 	}
 	return routes
+}
+
+// groupMentionPlaceholder is the object replacement character Signal puts in
+// message text where a native @mention appeared. The mention target is carried
+// separately, so the placeholder only needs to be removed before parsing.
+const groupMentionPlaceholder = "\uFFFC"
+
+// stripGroupMention removes Signal's mention placeholders and, when present, a
+// literal @<persona> token. It reports whether a literal mention was found.
+// Native mentions are reported separately by Inbound.MentionsMe.
+func stripGroupMention(text, name string) (string, bool) {
+	text = strings.ReplaceAll(text, groupMentionPlaceholder, " ")
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "Aether"
+	}
+	needle := "@" + name
+	for idx := 0; idx+len(needle) <= len(text); idx++ {
+		if !strings.EqualFold(text[idx:idx+len(needle)], needle) {
+			continue
+		}
+		end := idx + len(needle)
+		if (idx == 0 || !isMentionWord(text[idx-1])) &&
+			(end == len(text) || !isMentionWord(text[end])) {
+			return strings.TrimSpace(text[:idx] + " " + text[end:]), true
+		}
+	}
+	return text, false
+}
+
+func isMentionWord(b byte) bool {
+	switch {
+	case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
+		return true
+	case b == '_' || b == '-':
+		return true
+	case b >= 0x80:
+		return true
+	default:
+		return false
+	}
 }
 
 // lookupFold resolves a map key exactly first, then case-insensitively. Exact

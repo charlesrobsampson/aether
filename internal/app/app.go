@@ -331,6 +331,11 @@ func Run(ctx context.Context, opts Options) error {
 			// repeat message does not create a second request (plan §3.2).
 			_ = adminManager.RequestApprovalFrom(context.Background(), unknown.Sender, unknown.Name)
 		},
+		OnUnknownGroup: func(unknown api.UnknownGroup) {
+			// A group must be approved before the bot can send there. The
+			// admin-manager deduplicates pending group requests.
+			_ = adminManager.RequestGroupApproval(context.Background(), unknown.GroupID, unknown.Name, unknown.Sender)
+		},
 		Queue:    q,
 		Sessions: rt,
 		Registry: st,
@@ -455,6 +460,8 @@ func builtins(configManager *configmgr.Manager, adminManager *adminmgr.Manager, 
 					Satellite:    satellite,
 					MessageID:    in.MessageID,
 					GroupID:      in.GroupID,
+					GroupName:    in.GroupName,
+					MentionsMe:   in.MentionsMe,
 					TimestampMS:  in.TimestampMS,
 				})
 			},
@@ -595,6 +602,14 @@ func (s *queueSender) Send(_ context.Context, resp sdk.Response) error {
 	}
 	if !model.ValidFormat(resp.Format) {
 		return fmt.Errorf("app: unsupported message format %q", resp.Format)
+	}
+	if group := strings.TrimSpace(resp.GroupChatID); group != "" {
+		return s.queue.Enqueue(queue.Job{
+			Recipient: group,
+			Text:      resp.Text,
+			Styled:    model.StyledFormat(resp.Format),
+			Provider:  s.provider,
+		})
 	}
 	if len(resp.Recipients) > 1 {
 		metrics.IncBulkMessageRequests()

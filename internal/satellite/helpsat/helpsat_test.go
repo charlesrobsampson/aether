@@ -155,6 +155,24 @@ func TestHelpCapsOutput(t *testing.T) {
 	}
 }
 
+func TestHelpRepliesToGroup(t *testing.T) {
+	manager, sender := testManager(t, auth.User)
+	if err := manager.HandleHelp(sdk.Transmission{
+		Sender:  testSender,
+		GroupID: "group.example",
+		Text:    "help",
+	}); err != nil {
+		t.Fatalf("HandleHelp: %v", err)
+	}
+	if len(sender.responses) != 1 {
+		t.Fatalf("responses = %d, want 1", len(sender.responses))
+	}
+	got := sender.responses[0].Recipients
+	if len(got) != 1 || got[0] != "group.example" {
+		t.Fatalf("recipients = %v, want [group.example]", got)
+	}
+}
+
 func TestHelpSendsStyledText(t *testing.T) {
 	manager, sender := testManager(t, auth.User)
 	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help"}); err != nil {

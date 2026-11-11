@@ -21,14 +21,17 @@ import (
 // dispatchEnvelope mirrors the payload in plan §3.6. Args stay raw so each case
 // can compare the exact typed JSON the satellite receives.
 type dispatchEnvelope struct {
-	Command   string                     `json:"command"`
-	Trigger   string                     `json:"trigger"`
-	Args      map[string]json.RawMessage `json:"args"`
-	Text      string                     `json:"text"`
-	Sender    string                     `json:"sender"`
-	Satellite string                     `json:"satellite"`
-	ThreadID  string                     `json:"thread_id"`
-	MessageID string                     `json:"message_id"`
+	Command    string                     `json:"command"`
+	Trigger    string                     `json:"trigger"`
+	Args       map[string]json.RawMessage `json:"args"`
+	Text       string                     `json:"text"`
+	Sender     string                     `json:"sender"`
+	Satellite  string                     `json:"satellite"`
+	ThreadID   string                     `json:"thread_id"`
+	MessageID  string                     `json:"message_id"`
+	GroupID    string                     `json:"group_id"`
+	GroupName  string                     `json:"group_name"`
+	MentionsMe bool                       `json:"mentions_me"`
 }
 
 type dispatchCall struct {
@@ -577,5 +580,136 @@ func TestCommandMatchingIsCaseInsensitive(t *testing.T) {
 	}
 	if got := stripPrefixes("aether help", cfg.System.Persona.Prefixes); got != "help" {
 		t.Errorf("stripPrefixes(aether) = %q, want help", got)
+	}
+}
+
+// TestGroupMentionGating proves group messages require a mention, native
+// Signal mentions and literal @Aether mentions both work, and direct messages
+// are unaffected.
+func TestGroupMentionGating(t *testing.T) {
+	const (
+		sender  = "+15555550102"
+		groupID = "group.example"
+	)
+
+	tests := []struct {
+		name       string
+		text       string
+		groupID    string
+		mentionsMe bool
+		wantCalls  int
+		wantText   string
+		wantError  string
+	}{
+		{
+			name:      "group without mention is dropped",
+			text:      "!fly FPS",
+			groupID:   groupID,
+			wantError: "group message without mention",
+		},
+		{
+			name:      "literal mention is stripped",
+			text:      "@Aether !fly FPS",
+			groupID:   groupID,
+			wantCalls: 1,
+			wantText:  "fly FPS",
+		},
+		{
+			name:       "native Signal mention is accepted",
+			text:       "\uFFFC !fly FPS",
+			groupID:    groupID,
+			mentionsMe: true,
+			wantCalls:  1,
+			wantText:   "fly FPS",
+		},
+		{
+			name:      "direct message needs no mention",
+			text:      "!fly FPS",
+			wantCalls: 1,
+			wantText:  "fly FPS",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var (
+				mu       sync.Mutex
+				envelope dispatchEnvelope
+				calls    int
+			)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var got dispatchEnvelope
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Errorf("satellite received invalid JSON: %v", err)
+				}
+				mu.Lock()
+				envelope = got
+				calls++
+				mu.Unlock()
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(server.Close)
+
+			root := testutil.TempConfig(t)
+			cfg, err := config.LoadConfig(root)
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			testutil.WriteJSON(t, filepath.Join(root, "routes.json"), routesForTest(cfg, server.URL))
+			cfg, err = config.LoadConfig(root)
+			if err != nil {
+				t.Fatalf("LoadConfig after routes: %v", err)
+			}
+
+			st, err := store.Open(":memory:")
+			if err != nil {
+				t.Fatalf("store.Open: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := st.Close(); err != nil {
+					t.Errorf("store.Close: %v", err)
+				}
+			})
+
+			rt := New(Options{
+				Config: func() *config.Config { return cfg },
+				Store:  st,
+				Client: server.Client(),
+			})
+			rt.Dispatch(context.Background(), model.Inbound{
+				Sender:     sender,
+				Text:       tc.text,
+				Provider:   "signal",
+				GroupID:    tc.groupID,
+				MentionsMe: tc.mentionsMe,
+				MessageID:  "group-mention-1",
+			})
+
+			mu.Lock()
+			gotEnvelope := envelope
+			gotCalls := calls
+			mu.Unlock()
+
+			if gotCalls != tc.wantCalls {
+				t.Fatalf("satellite calls = %d, want %d", gotCalls, tc.wantCalls)
+			}
+			if tc.wantCalls > 0 {
+				if gotEnvelope.Text != tc.wantText {
+					t.Errorf("envelope text = %q, want %q", gotEnvelope.Text, tc.wantText)
+				}
+				if gotEnvelope.GroupID != tc.groupID {
+					t.Errorf("envelope group_id = %q, want %q", gotEnvelope.GroupID, tc.groupID)
+				}
+			}
+
+			_, _, _, _, status, errText, _ := lastRouteLog(t, st)
+			if tc.wantError != "" {
+				if status != "dropped" || !strings.Contains(errText, tc.wantError) {
+					t.Errorf("route log = status %q error %q, want dropped containing %q", status, errText, tc.wantError)
+				}
+			} else if status != "dispatched" {
+				t.Errorf("route log status = %q, want dispatched (error %q)", status, errText)
+			}
+		})
 	}
 }
