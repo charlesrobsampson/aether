@@ -258,9 +258,10 @@ func (m *Manager) requestApproval(ctx context.Context, identity, kind, displayNa
 	if maintainerState.NotifyApprovals && maintainer != "" && m.queue != nil {
 		// Notification is best-effort: the pending row is the source of truth
 		// and can still be listed or resolved if the queue is shutting down.
-		text := approvalNotification(id, identity, displayName)
+		prefix := approvalPrefix(cfg, maintainer)
+		text := approvalNotification(id, identity, displayName, prefix)
 		if kind == store.ApprovalKindGroup {
-			text = groupApprovalNotification(id, identity, displayName, requester)
+			text = groupApprovalNotification(id, identity, displayName, requester, prefix)
 		}
 		_ = m.queue.Enqueue(queue.Job{
 			Recipient: maintainer,
@@ -392,7 +393,7 @@ func (m *Manager) HandlePending(t sdk.Transmission) error {
 	if err != nil {
 		return err
 	}
-	return m.send(t, renderPending(pending))
+	return m.send(t, renderPending(pending, approvalPrefix(cfg, strings.TrimSpace(t.Sender))))
 }
 
 func (m *Manager) resolveApproval(ctx context.Context, actor, phone, status string) error {
@@ -654,18 +655,18 @@ func pickMaintainer(state config.MaintainerConfig) (string, int) {
 	return state.Maintainers[last%len(state.Maintainers)], last + 1
 }
 
-func approvalNotification(id int64, identity, displayName string) string {
+func approvalNotification(id int64, identity, displayName, prefix string) string {
 	who := identity
 	if name := strings.TrimSpace(displayName); name != "" && name != identity {
 		who = fmt.Sprintf("%s (%s)", name, identity)
 	}
 	return fmt.Sprintf(
-		`New Aether access request #%d from %s. Reply "!approve %d" or "!deny %d".`,
-		id, who, id, id,
+		`New Aether access request #%d from %s. Reply "%sapprove %d" or "%sdeny %d".`,
+		id, who, prefix, id, prefix, id,
 	)
 }
 
-func groupApprovalNotification(id int64, groupID, groupName, requester string) string {
+func groupApprovalNotification(id int64, groupID, groupName, requester, prefix string) string {
 	who := groupID
 	if name := strings.TrimSpace(groupName); name != "" && name != groupID {
 		who = fmt.Sprintf("%s (%s)", name, groupID)
@@ -675,15 +676,39 @@ func groupApprovalNotification(id int64, groupID, groupName, requester string) s
 		from = fmt.Sprintf(" for a message from %s", requester)
 	}
 	return fmt.Sprintf(
-		`New Aether group access request #%d%s: %s. Reply "!approve %d" or "!deny %d".`,
-		id, from, who, id, id,
+		`New Aether group access request #%d%s: %s. Reply "%sapprove %d" or "%sdeny %d".`,
+		id, from, who, prefix, id, prefix, id,
 	)
+}
+
+// approvalPrefix returns the command prefix the assigned maintainer must use.
+// It mirrors the router's effective-prefix rules: an explicitly empty user list
+// means no prefix, a non-empty user list overrides the persona defaults, and
+// otherwise the first persona prefix applies.
+func approvalPrefix(cfg *config.Config, maintainer string) string {
+	if cfg == nil {
+		return "!"
+	}
+	if user, ok := cfg.Users[maintainer]; ok && user.Prefixes != nil {
+		for _, prefix := range user.Prefixes {
+			if strings.TrimSpace(prefix) != "" {
+				return prefix
+			}
+		}
+		return ""
+	}
+	for _, prefix := range cfg.System.Persona.Prefixes {
+		if strings.TrimSpace(prefix) != "" {
+			return prefix
+		}
+	}
+	return "!"
 }
 
 // renderPending formats the pending queue as text. Identities may be phone
 // numbers or Signal UUIDs; row IDs are short references accepted by !approve
 // and !deny, including as a comma-separated batch.
-func renderPending(records []store.ApprovalRecord) string {
+func renderPending(records []store.ApprovalRecord, prefix string) string {
 	if len(records) == 0 {
 		return "No pending access requests."
 	}
@@ -702,7 +727,7 @@ func renderPending(records []store.ApprovalRecord) string {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString(`Reply "!approve <id>", "!approve 1,3,4", or "!deny <id>".`)
+	fmt.Fprintf(&b, `Reply "%sapprove <id>", "%sapprove 1,3,4", or "%sdeny <id>".`, prefix, prefix, prefix)
 	return b.String()
 }
 

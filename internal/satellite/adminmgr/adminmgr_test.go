@@ -881,3 +881,30 @@ func TestGroupApprovalFlow(t *testing.T) {
 		t.Fatalf("pending after resolution = %+v, want none", responses)
 	}
 }
+
+// TestApprovalNotificationUsesMaintainerPrefix proves the notification tells
+// the assigned maintainer to use the prefix their user config actually accepts.
+// An explicitly empty prefix list means commands are sent bare.
+func TestApprovalNotificationUsesMaintainerPrefix(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, []string{maintainerPhone1}, true)
+
+	testutil.WriteJSON(t, filepath.Join(f.root, "users", maintainerPhone1+".json"), map[string]any{
+		"prefixes": []string{},
+	})
+
+	if err := f.manager.RequestApproval(ctx, unknownPhone); err != nil {
+		t.Fatalf("RequestApproval: %v", err)
+	}
+	jobs := f.queue.Jobs()
+	if len(jobs) != 1 {
+		t.Fatalf("notification jobs = %d, want 1", len(jobs))
+	}
+	text := jobs[0].Text
+	if strings.Contains(text, `"!approve`) {
+		t.Fatalf("notification %q used a prefix the maintainer disabled", text)
+	}
+	if !strings.Contains(text, `"approve `) {
+		t.Fatalf("notification %q does not show the bare approve command", text)
+	}
+}
