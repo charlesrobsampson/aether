@@ -530,6 +530,7 @@ func helpCommands() []helpsat.Entry {
 				"config export [@phone] — pasteable config set lines.",
 				"config set [@phone] <key> <value> — change a setting.",
 				"Keys: timezone, prefixes, muted, aliases.",
+				`Use "config set prefixes []" for no command prefix.`,
 				"Admins can target another user with @<phone>.",
 			},
 		},
@@ -540,7 +541,7 @@ func helpCommands() []helpsat.Entry {
 			Description: "Manage users and approvals",
 			Role:        auth.Admin,
 			Details: []string{
-				"admin approve|deny <phone|uuid> — resolve an access request.",
+				"admin approve|deny [id[,id...]|phone|uuid] — resolve requests.",
 				"admin list — show pending requests.",
 				"admin add|remove <phone|uuid> — change the admin list.",
 			},
@@ -548,18 +549,24 @@ func helpCommands() []helpsat.Entry {
 		{
 			Name:        "approve",
 			Trigger:     "approve",
-			Usage:       "approve <phone|uuid>",
+			Usage:       "approve [id[,id...]|phone|uuid]",
 			Description: "Approve an access request",
 			Role:        auth.Maintainer,
-			Details:     []string{`Use "pending" to list requests before resolving one.`},
+			Details: []string{
+				`Use "pending" to list requests before resolving one.`,
+				`A bare "approve" resolves the newest pending request.`,
+			},
 		},
 		{
 			Name:        "deny",
 			Trigger:     "deny",
-			Usage:       "deny <phone|uuid>",
+			Usage:       "deny [id[,id...]|phone|uuid]",
 			Description: "Deny an access request",
 			Role:        auth.Maintainer,
-			Details:     []string{`Use "pending" to list requests before resolving one.`},
+			Details: []string{
+				`Use "pending" to list requests before resolving one.`,
+				`A bare "deny" resolves the newest pending request.`,
+			},
 		},
 		{
 			Name:        "pending",
@@ -567,7 +574,7 @@ func helpCommands() []helpsat.Entry {
 			Usage:       "pending",
 			Description: "List pending access requests",
 			Role:        auth.Maintainer,
-			Details:     []string{`Resolve a request with "approve <id>" or "deny <id>".`},
+			Details:     []string{`Resolve with "approve <id>", "approve 1,3,4", or "deny <id>".`},
 		},
 	}
 }

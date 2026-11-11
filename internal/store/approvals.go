@@ -24,6 +24,7 @@ const (
 type ApprovalRecord struct {
 	ID          int64
 	Phone       string
+	DisplayName string
 	Maintainer  string
 	Status      string
 	RequestedAt time.Time
@@ -66,10 +67,11 @@ func (s *Store) InsertApproval(ctx context.Context, rec ApprovalRecord) (int64, 
 
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO approvals
-			(phone, maintainer, status, requested_at, resolved_at, resolved_by)
-		VALUES (?, ?, ?, ?, ?, ?)`,
+			(phone, maintainer, status, requested_at, resolved_at, resolved_by, display_name)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		rec.Phone, rec.Maintainer, status,
 		requestedAt.UTC().Format(time.RFC3339), resolvedAt, resolvedBy,
+		strings.TrimSpace(rec.DisplayName),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("store: insert approval for %q: %w", rec.Phone, err)
@@ -93,7 +95,7 @@ func (s *Store) PendingApproval(ctx context.Context, phone string) (*ApprovalRec
 	}
 
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, phone, maintainer, status, requested_at,
+		SELECT id, phone, maintainer, display_name, status, requested_at,
 		       COALESCE(resolved_at, ''), COALESCE(resolved_by, '')
 		FROM approvals
 		WHERE phone = ? AND status = ?
@@ -117,7 +119,7 @@ func (s *Store) PendingApprovals(ctx context.Context) ([]ApprovalRecord, error) 
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, phone, maintainer, status, requested_at,
+		SELECT id, phone, maintainer, display_name, status, requested_at,
 		       COALESCE(resolved_at, ''), COALESCE(resolved_by, '')
 		FROM approvals
 		WHERE status = ?
@@ -181,6 +183,54 @@ func (s *Store) ResolveApprovals(ctx context.Context, phone, status, resolvedBy 
 	return affected, nil
 }
 
+// ResolveApprovalsByIDs marks the pending requests with the given row IDs as
+// status. It is idempotent in the same way as ResolveApprovals: rows that are
+// already resolved are untouched. An empty ids slice is a no-op.
+func (s *Store) ResolveApprovalsByIDs(ctx context.Context, ids []int64, status, resolvedBy string, resolvedAt time.Time) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, errors.New("store: closed")
+	}
+	if status == ApprovalPending || !validApprovalStatus(status) {
+		return 0, fmt.Errorf("store: invalid resolved approval status %q", status)
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	if resolvedAt.IsZero() {
+		resolvedAt = time.Now()
+	}
+	var resolvedByValue any
+	if resolvedBy != "" {
+		resolvedByValue = resolvedBy
+	}
+
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+4)
+	args = append(args, status, resolvedAt.UTC().Format(time.RFC3339), resolvedByValue)
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	args = append(args, ApprovalPending)
+
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE approvals
+		SET status = ?, resolved_at = ?, resolved_by = ?
+		WHERE id IN (`+strings.Join(placeholders, ",")+`) AND status = ?`,
+		args...,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: resolve approval ids: %w", err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: resolve approval ids rows: %w", err)
+	}
+	return affected, nil
+}
+
 // ExpireApprovals marks pending requests older than before as expired. The rows
 // stay in the table as history. It returns how many rows changed.
 func (s *Store) ExpireApprovals(ctx context.Context, before time.Time) (int64, error) {
@@ -226,7 +276,7 @@ func scanApproval(row approvalScanner) (ApprovalRecord, error) {
 	var rec ApprovalRecord
 	var requestedAt, resolvedAt string
 	if err := row.Scan(
-		&rec.ID, &rec.Phone, &rec.Maintainer, &rec.Status,
+		&rec.ID, &rec.Phone, &rec.Maintainer, &rec.DisplayName, &rec.Status,
 		&requestedAt, &resolvedAt, &rec.ResolvedBy,
 	); err != nil {
 		return ApprovalRecord{}, err

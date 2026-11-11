@@ -317,6 +317,13 @@ func (s *Store) migrate() error {
 		tx.Rollback()
 		return fmt.Errorf("store: migrate: %w", err)
 	}
+	// Approvals gained a display name so maintainer notifications and pending
+	// listings can show who is asking, not just an opaque UUID.
+	if err := addColumnIfMissing(tx, "approvals", "display_name",
+		`ALTER TABLE approvals ADD COLUMN display_name TEXT NOT NULL DEFAULT ''`); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("store: migrate: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit migrations: %w", err)
 	}
@@ -416,7 +423,8 @@ var migrations = []string{
 		status       TEXT NOT NULL,
 		requested_at TEXT NOT NULL,
 		resolved_at  TEXT,
-		resolved_by  TEXT
+		resolved_by  TEXT,
+		display_name TEXT NOT NULL DEFAULT ''
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_approvals_phone_status ON approvals (phone, status)`,
 }

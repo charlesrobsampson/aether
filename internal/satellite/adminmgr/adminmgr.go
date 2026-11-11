@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -80,6 +81,7 @@ type ApprovalStore interface {
 	PendingApproval(ctx context.Context, phone string) (*store.ApprovalRecord, error)
 	PendingApprovals(ctx context.Context) ([]store.ApprovalRecord, error)
 	ResolveApprovals(ctx context.Context, phone, status, resolvedBy string, at time.Time) (int64, error)
+	ResolveApprovalsByIDs(ctx context.Context, ids []int64, status, resolvedBy string, at time.Time) (int64, error)
 	ExpireApprovals(ctx context.Context, before time.Time) (int64, error)
 }
 
@@ -204,12 +206,15 @@ func (m *Manager) RequestApprovalFrom(ctx context.Context, identity, displayName
 	}
 
 	maintainer, next := pickMaintainer(maintainerState)
-	if _, err := m.store.InsertApproval(ctx, store.ApprovalRecord{
+	displayName = strings.TrimSpace(displayName)
+	id, err := m.store.InsertApproval(ctx, store.ApprovalRecord{
 		Phone:       identity,
+		DisplayName: displayName,
 		Maintainer:  maintainer,
 		Status:      store.ApprovalPending,
 		RequestedAt: now,
-	}); err != nil {
+	})
+	if err != nil {
 		return statusError(http.StatusInternalServerError, "admin: record request: %v", err)
 	}
 
@@ -226,7 +231,7 @@ func (m *Manager) RequestApprovalFrom(ctx context.Context, identity, displayName
 		// and can still be listed or resolved if the queue is shutting down.
 		_ = m.queue.Enqueue(queue.Job{
 			Recipient: maintainer,
-			Text:      approvalNotification(identity, displayName),
+			Text:      approvalNotification(id, identity, displayName),
 		})
 	}
 	return nil
@@ -307,9 +312,9 @@ func (m *Manager) HandleAdmin(t sdk.Transmission) error {
 	}
 	switch action {
 	case "approve":
-		return m.Approve(context.Background(), t.Sender, identity)
+		return m.resolveApprovalRefs(context.Background(), t.Sender, identity, store.ApprovalApproved, true)
 	case "deny":
-		return m.Deny(context.Background(), t.Sender, identity)
+		return m.resolveApprovalRefs(context.Background(), t.Sender, identity, store.ApprovalDenied, true)
 	case "list":
 		return m.HandlePending(t)
 	case "add":
@@ -317,26 +322,28 @@ func (m *Manager) HandleAdmin(t sdk.Transmission) error {
 	case "remove":
 		return m.RemoveAdmin(context.Background(), t.Sender, identity)
 	default:
-		return statusError(http.StatusBadRequest, `admin: expected "admin approve|deny|list|add|remove [phone|uuid]"`)
+		return statusError(http.StatusBadRequest, `admin: expected "admin approve|deny|list|add|remove [id[,id...]|phone|uuid]"`)
 	}
 }
 
-// HandleApprove implements !approve <phone|uuid>.
+// HandleApprove implements !approve [id[,id...]|phone|uuid]. With no target it
+// resolves the newest pending request, which is normally the one that was just
+// notified.
 func (m *Manager) HandleApprove(t sdk.Transmission) error {
-	identity, err := parseIdentityCommand(t, "approve")
+	target, err := parseTargetCommand(t, "approve")
 	if err != nil {
 		return err
 	}
-	return m.Approve(context.Background(), t.Sender, identity)
+	return m.resolveApprovalRefs(context.Background(), t.Sender, target, store.ApprovalApproved, true)
 }
 
-// HandleDeny implements !deny <phone|uuid>.
+// HandleDeny implements !deny [id[,id...]|phone|uuid].
 func (m *Manager) HandleDeny(t sdk.Transmission) error {
-	identity, err := parseIdentityCommand(t, "deny")
+	target, err := parseTargetCommand(t, "deny")
 	if err != nil {
 		return err
 	}
-	return m.Deny(context.Background(), t.Sender, identity)
+	return m.resolveApprovalRefs(context.Background(), t.Sender, target, store.ApprovalDenied, true)
 }
 
 // HandlePending implements !pending and !admin list.
@@ -356,6 +363,16 @@ func (m *Manager) HandlePending(t sdk.Transmission) error {
 }
 
 func (m *Manager) resolveApproval(ctx context.Context, actor, phone, status string) error {
+	if strings.TrimSpace(phone) == "" {
+		return statusError(http.StatusBadRequest, "admin: invalid sender %q", phone)
+	}
+	return m.resolveApprovalRefs(ctx, actor, phone, status, false)
+}
+
+// resolveApprovalRefs resolves one or more targets. A target is a pending
+// approval row id, a comma/space separated list of row ids, or a phone/UUID.
+// allowEmpty makes a bare command resolve the newest pending request.
+func (m *Manager) resolveApprovalRefs(ctx context.Context, actor, raw, status string, allowEmpty bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -372,41 +389,100 @@ func (m *Manager) resolveApproval(ctx context.Context, actor, phone, status stri
 		return statusError(http.StatusForbidden, "admin: maintainer role required")
 	}
 
-	phone = strings.TrimSpace(phone)
-	if !auth.ValidIdentity(phone) {
-		return statusError(http.StatusBadRequest, "admin: invalid sender %q", phone)
+	refs, err := parseApprovalRefs(raw)
+	if err != nil {
+		return err
+	}
+	if len(refs) == 0 && !allowEmpty {
+		return statusError(http.StatusBadRequest, "admin: approval id, phone, or uuid is required")
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	admin := m.loadAdmin(cfg)
-	var changed bool
-	switch status {
-	case store.ApprovalApproved:
-		admin.DeniedNumbers, changed = removeString(admin.DeniedNumbers, phone)
-		if !hasString(admin.ApprovedNumbers, phone) {
-			admin.ApprovedNumbers = append(admin.ApprovedNumbers, phone)
-			changed = true
-		}
-	case store.ApprovalDenied:
-		admin.ApprovedNumbers, changed = removeString(admin.ApprovedNumbers, phone)
-		if !hasString(admin.DeniedNumbers, phone) {
-			admin.DeniedNumbers = append(admin.DeniedNumbers, phone)
-			changed = true
-		}
-	default:
-		return statusError(http.StatusInternalServerError, "admin: unsupported approval status %q", status)
+	now := m.now()
+	if _, err := m.store.ExpireApprovals(ctx, now.Add(-approvalTTL)); err != nil {
+		return statusError(http.StatusInternalServerError, "admin: expire stale requests: %v", err)
+	}
+	pending, err := m.store.PendingApprovals(ctx)
+	if err != nil {
+		return statusError(http.StatusInternalServerError, "admin: list pending requests: %v", err)
 	}
 
+	if len(refs) == 0 {
+		if len(pending) == 0 {
+			return statusError(http.StatusBadRequest, "admin: no pending access requests")
+		}
+		// PendingApprovals is oldest first, so the last row is the newest
+		// request and normally the one whose notification prompted this reply.
+		refs = []approvalRef{{id: pending[len(pending)-1].ID}}
+	}
+
+	byID := make(map[int64]store.ApprovalRecord, len(pending))
+	for _, rec := range pending {
+		byID[rec.ID] = rec
+	}
+
+	var (
+		identities []string
+		ids        []int64
+		missing    []string
+	)
+	for _, ref := range refs {
+		if ref.id == 0 {
+			identities = append(identities, ref.identity)
+			continue
+		}
+		rec, ok := byID[ref.id]
+		if !ok {
+			missing = append(missing, fmt.Sprintf("#%d", ref.id))
+			continue
+		}
+		ids = append(ids, ref.id)
+		identities = append(identities, rec.Phone)
+	}
+	if len(missing) > 0 {
+		return statusError(http.StatusBadRequest, "admin: no pending request %s", strings.Join(missing, ", "))
+	}
+
+	admin := m.loadAdmin(cfg)
+	var changed bool
+	for _, identity := range dedupeStrings(identities) {
+		switch status {
+		case store.ApprovalApproved:
+			admin.DeniedNumbers, changed = removeStringChanged(admin.DeniedNumbers, identity, changed)
+			if !hasString(admin.ApprovedNumbers, identity) {
+				admin.ApprovedNumbers = append(admin.ApprovedNumbers, identity)
+				changed = true
+			}
+		case store.ApprovalDenied:
+			admin.ApprovedNumbers, changed = removeStringChanged(admin.ApprovedNumbers, identity, changed)
+			if !hasString(admin.DeniedNumbers, identity) {
+				admin.DeniedNumbers = append(admin.DeniedNumbers, identity)
+				changed = true
+			}
+		default:
+			return statusError(http.StatusInternalServerError, "admin: unsupported approval status %q", status)
+		}
+	}
 	if changed {
 		if err := writeConfigJSON(filepath.Join(cfg.Root, "admin.json"), admin); err != nil {
 			return statusError(http.StatusInternalServerError, "admin: write admin.json: %v", err)
 		}
 	}
 
-	if _, err := m.store.ResolveApprovals(ctx, phone, status, actor, m.now()); err != nil {
-		return statusError(http.StatusInternalServerError, "admin: resolve request: %v", err)
+	if len(ids) > 0 {
+		if _, err := m.store.ResolveApprovalsByIDs(ctx, ids, status, actor, now); err != nil {
+			return statusError(http.StatusInternalServerError, "admin: resolve requests: %v", err)
+		}
+	}
+	// A phone/UUID target may refer to a request that was not in the pending
+	// set (for example an old row already resolved). Resolving it is a no-op,
+	// which keeps repeated approvals idempotent.
+	for _, identity := range identities {
+		if _, err := m.store.ResolveApprovals(ctx, identity, status, actor, now); err != nil {
+			return statusError(http.StatusInternalServerError, "admin: resolve request: %v", err)
+		}
 	}
 	return nil
 }
@@ -506,19 +582,20 @@ func pickMaintainer(state config.MaintainerConfig) (string, int) {
 	return state.Maintainers[last%len(state.Maintainers)], last + 1
 }
 
-func approvalNotification(identity, displayName string) string {
+func approvalNotification(id int64, identity, displayName string) string {
 	who := identity
 	if name := strings.TrimSpace(displayName); name != "" && name != identity {
 		who = fmt.Sprintf("%s (%s)", name, identity)
 	}
 	return fmt.Sprintf(
-		`New Aether access request from %s. Reply "!approve %s" or "!deny %s".`,
-		who, identity, identity,
+		`New Aether access request #%d from %s. Reply "!approve %d" or "!deny %d".`,
+		id, who, id, id,
 	)
 }
 
 // renderPending formats the pending queue as text. Identities may be phone
-// numbers or Signal UUIDs.
+// numbers or Signal UUIDs; row IDs are short references accepted by !approve
+// and !deny, including as a comma-separated batch.
 func renderPending(records []store.ApprovalRecord) string {
 	if len(records) == 0 {
 		return "No pending access requests."
@@ -526,7 +603,7 @@ func renderPending(records []store.ApprovalRecord) string {
 	var b strings.Builder
 	b.WriteString("Pending access requests:\n")
 	for _, rec := range records {
-		fmt.Fprintf(&b, "  #%d %s", rec.ID, rec.Phone)
+		fmt.Fprintf(&b, "  #%d %s", rec.ID, approvalLabel(rec))
 		if rec.Maintainer != "" {
 			fmt.Fprintf(&b, " (assigned to %s)", rec.Maintainer)
 		}
@@ -535,8 +612,20 @@ func renderPending(records []store.ApprovalRecord) string {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString(`Reply "!approve <id>" or "!deny <id>".`)
+	b.WriteString(`Reply "!approve <id>", "!approve 1,3,4", or "!deny <id>".`)
 	return b.String()
+}
+
+func approvalLabel(rec store.ApprovalRecord) string {
+	name := strings.TrimSpace(rec.DisplayName)
+	switch {
+	case name != "" && name != rec.Phone:
+		return fmt.Sprintf("%s (%s)", name, rec.Phone)
+	case name != "":
+		return name
+	default:
+		return rec.Phone
+	}
 }
 
 // send emits one read-only admin answer to the originating sender.
@@ -561,7 +650,7 @@ func (m *Manager) send(t sdk.Transmission, text string) error {
 }
 
 func parseAdminCommand(t sdk.Transmission) (string, string, error) {
-	const usage = `admin: expected "admin approve|deny|list|add|remove [phone|uuid]"`
+	const usage = `admin: expected "admin approve|deny|list|add|remove [id[,id...]|phone|uuid]"`
 
 	text := strings.TrimSpace(t.Text)
 	if text != "" {
@@ -575,64 +664,118 @@ func parseAdminCommand(t sdk.Transmission) (string, string, error) {
 		}
 
 		action := strings.ToLower(fields[0])
+		target := strings.Join(fields[1:], " ")
 		switch action {
 		case "list":
-			if len(fields) != 1 {
+			if target != "" {
 				return "", "", statusError(http.StatusBadRequest, usage)
 			}
 			return "list", "", nil
-		case "approve", "deny", "add", "remove":
-			if len(fields) != 2 {
+		case "approve", "deny":
+			// An empty target resolves the newest pending request.
+			return action, target, nil
+		case "add", "remove":
+			if target == "" {
 				return "", "", statusError(http.StatusBadRequest, usage)
 			}
-			return action, fields[1], nil
+			return action, target, nil
 		default:
 			return "", "", statusError(http.StatusBadRequest, usage)
 		}
 	}
 
 	action := strings.ToLower(argString(t.Args, "action"))
-	identity := strings.TrimSpace(argString(t.Args, "phone"))
-	if identity == "" {
-		identity = strings.TrimSpace(argString(t.Args, "id"))
+	target := strings.TrimSpace(argString(t.Args, "ids"))
+	if target == "" {
+		target = strings.TrimSpace(argString(t.Args, "id"))
+	}
+	if target == "" {
+		target = strings.TrimSpace(argString(t.Args, "phone"))
 	}
 	switch action {
 	case "list":
 		return "list", "", nil
-	case "approve", "deny", "add", "remove":
-		if identity == "" {
+	case "approve", "deny":
+		return action, target, nil
+	case "add", "remove":
+		if target == "" {
 			return "", "", statusError(http.StatusBadRequest, usage)
 		}
-		return action, identity, nil
+		return action, target, nil
 	default:
 		return "", "", statusError(http.StatusBadRequest, usage)
 	}
 }
 
-// parseIdentityCommand reads "<action> <phone|uuid>" for the standalone
-// !approve and !deny built-ins.
-func parseIdentityCommand(t sdk.Transmission, name string) (string, error) {
-	usage := fmt.Sprintf(`admin: expected "%s <phone|uuid>"`, name)
-
+// parseTargetCommand reads "[id[,id...]|phone|uuid]" for the standalone
+// !approve and !deny built-ins. An empty result is a bare command.
+func parseTargetCommand(t sdk.Transmission, name string) (string, error) {
 	if text := strings.TrimSpace(t.Text); text != "" {
 		fields := strings.Fields(stripCommandPrefix(text))
 		if len(fields) > 0 && (fields[0] == name || (t.Trigger != "" && fields[0] == t.Trigger)) {
 			fields = fields[1:]
 		}
-		if len(fields) != 1 {
-			return "", statusError(http.StatusBadRequest, "%s", usage)
-		}
-		return fields[0], nil
+		return strings.Join(fields, " "), nil
 	}
 
-	identity := strings.TrimSpace(argString(t.Args, "id"))
-	if identity == "" {
-		identity = strings.TrimSpace(argString(t.Args, "phone"))
+	target := strings.TrimSpace(argString(t.Args, "ids"))
+	if target == "" {
+		target = strings.TrimSpace(argString(t.Args, "id"))
 	}
-	if identity == "" {
-		return "", statusError(http.StatusBadRequest, "%s", usage)
+	if target == "" {
+		target = strings.TrimSpace(argString(t.Args, "phone"))
 	}
-	return identity, nil
+	return target, nil
+}
+
+// approvalRef is either a pending-row ID or a phone/UUID identity.
+type approvalRef struct {
+	id       int64
+	identity string
+}
+
+// parseApprovalRefs accepts "1", "1,3,4", "1 3 4", "+15551234567", or a
+// Signal UUID. Commas and whitespace are interchangeable separators.
+func parseApprovalRefs(raw string) ([]approvalRef, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	fields := strings.Fields(strings.ReplaceAll(raw, ",", " "))
+	refs := make([]approvalRef, 0, len(fields))
+	for _, field := range fields {
+		if field == "" {
+			continue
+		}
+		if strings.HasPrefix(field, "#") {
+			field = strings.TrimPrefix(field, "#")
+		}
+		if isDigits(field) {
+			id, err := strconv.ParseInt(field, 10, 64)
+			if err != nil || id <= 0 {
+				return nil, statusError(http.StatusBadRequest, "admin: invalid approval id %q", field)
+			}
+			refs = append(refs, approvalRef{id: id})
+			continue
+		}
+		if !auth.ValidIdentity(field) {
+			return nil, statusError(http.StatusBadRequest, "admin: invalid approval target %q", field)
+		}
+		refs = append(refs, approvalRef{identity: field})
+	}
+	return refs, nil
+}
+
+func isDigits(text string) bool {
+	if text == "" {
+		return false
+	}
+	for _, r := range text {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func stripCommandPrefix(text string) string {
@@ -681,6 +824,30 @@ func removeString(list []string, value string) ([]string, bool) {
 		out = append(out, item)
 	}
 	return out, changed
+}
+
+// removeStringChanged is removeString with an accumulated changed flag, which
+// keeps multi-target resolution readable.
+func removeStringChanged(list []string, value string, changed bool) ([]string, bool) {
+	out, removed := removeString(list, value)
+	return out, changed || removed
+}
+
+// dedupeStrings preserves order while dropping repeats.
+func dedupeStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func writeConfigJSON(path string, v any) error {

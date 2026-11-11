@@ -223,7 +223,11 @@ func settingsFor(cfg *config.Config, phone string) []setting {
 	}
 
 	prefixes, note := effectivePrefixes(cfg, phone)
-	out = append(out, setting{key: "prefixes", value: strings.Join(prefixes, ","), note: note})
+	value := strings.Join(prefixes, ",")
+	if len(prefixes) == 0 {
+		value = "(none)"
+	}
+	out = append(out, setting{key: "prefixes", value: value, note: note})
 
 	if user.Muted {
 		out = append(out, setting{key: "muted", value: "true"})
@@ -253,12 +257,16 @@ func appendAliasSettings(out []setting, group string, aliases map[string]string)
 
 // effectivePrefixes returns the prefixes actually in force and, when they do
 // not come from the user file, a note describing where they came from.
+//
+// An explicitly empty user list (JSON []) means "no prefix" and overrides the
+// system persona defaults. A missing list still inherits them.
 func effectivePrefixes(cfg *config.Config, phone string) ([]string, string) {
 	if cfg == nil {
 		return []string{"!"}, "default"
 	}
-	if prefixes := cleanPrefixes(cfg.Users[phone].Prefixes); len(prefixes) > 0 {
-		return prefixes, ""
+	user, hasUser := cfg.Users[phone]
+	if hasUser && user.Prefixes != nil {
+		return cleanPrefixes(user.Prefixes), ""
 	}
 	if prefixes := cleanPrefixes(cfg.System.Persona.Prefixes); len(prefixes) > 0 {
 		return prefixes, "system default"
@@ -276,10 +284,16 @@ func cleanPrefixes(prefixes []string) []string {
 	return out
 }
 
-// actorPrefix returns the first prefix the sender can actually type.
+// actorPrefix returns the first prefix the sender can actually type. An
+// explicitly empty user list returns "" because commands need no prefix.
 func actorPrefix(cfg *config.Config, sender string) string {
 	if cfg != nil {
-		if prefixes := cleanPrefixes(cfg.Users[sender].Prefixes); len(prefixes) > 0 {
+		user, hasUser := cfg.Users[sender]
+		if hasUser && user.Prefixes != nil {
+			prefixes := cleanPrefixes(user.Prefixes)
+			if len(prefixes) == 0 {
+				return ""
+			}
 			return prefixes[0]
 		}
 		if prefixes := cleanPrefixes(cfg.System.Persona.Prefixes); len(prefixes) > 0 {
@@ -382,6 +396,9 @@ func renderExport(settings []setting, cfg *config.Config, actor, target string) 
 // setCommand renders a pasteable !config set line, including a target when an
 // admin is looking at somebody else's settings.
 func pasteSetCommand(cfg *config.Config, actor, target, key, value string) string {
+	if key == "prefixes" && value == "(none)" {
+		value = "[]"
+	}
 	command := actorPrefix(cfg, actor) + "config set"
 	if target != actor {
 		command += " @" + target

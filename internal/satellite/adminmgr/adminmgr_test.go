@@ -564,7 +564,7 @@ func TestApprovalFlowUUID(t *testing.T) {
 		t.Fatalf("notification jobs = %d, want 1", len(jobs))
 	}
 	text := jobs[0].Text
-	for _, want := range []string{unknownUUID, "Tara Schick", "!approve " + unknownUUID} {
+	for _, want := range []string{unknownUUID, "Tara Schick", "#1", "!approve 1"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("notification text %q does not contain %q", text, want)
 		}
@@ -675,4 +675,128 @@ func TestRequestApprovalRejectsInvalidIdentity(t *testing.T) {
 
 	err := f.manager.RequestApproval(context.Background(), "../admin")
 	requireStatus(t, err, http.StatusBadRequest)
+}
+
+// TestApproveBatchByID covers short row references, comma-separated batches,
+// and the fact that unlisted requests stay pending.
+func TestApproveBatchByID(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, []string{maintainerPhone1}, false)
+
+	for _, phone := range []string{unknownPhone, unknownPhone2, unknownPhone3} {
+		if err := f.manager.RequestApproval(ctx, phone); err != nil {
+			t.Fatalf("RequestApproval(%s): %v", phone, err)
+		}
+	}
+
+	if err := f.manager.HandleApprove(sdk.Transmission{
+		Trigger: "approve",
+		Text:    "!approve #1,3",
+		Sender:  maintainerPhone1,
+	}); err != nil {
+		t.Fatalf("HandleApprove(batch): %v", err)
+	}
+
+	admin := f.admin(t)
+	if !contains(admin.ApprovedNumbers, unknownPhone) || !contains(admin.ApprovedNumbers, unknownPhone3) {
+		t.Fatalf("approved_numbers = %v, want #1 and #3", admin.ApprovedNumbers)
+	}
+	if contains(admin.ApprovedNumbers, unknownPhone2) {
+		t.Fatalf("approved_numbers = %v must not contain #2", admin.ApprovedNumbers)
+	}
+	for _, phone := range []string{unknownPhone, unknownPhone3} {
+		rows := f.approvalsFor(t, phone)
+		if len(rows) != 1 || rows[0].Status != store.ApprovalApproved {
+			t.Fatalf("%s rows = %+v, want approved", phone, rows)
+		}
+	}
+	rows := f.approvalsFor(t, unknownPhone2)
+	if len(rows) != 1 || rows[0].Status != store.ApprovalPending {
+		t.Fatalf("%s rows = %+v, want still pending", unknownPhone2, rows)
+	}
+}
+
+// TestApproveBareUsesNewestRequest covers the context-free reply path: a bare
+// !approve resolves the newest pending request.
+func TestApproveBareUsesNewestRequest(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, []string{maintainerPhone1}, false)
+
+	if err := f.manager.RequestApproval(ctx, unknownPhone); err != nil {
+		t.Fatalf("RequestApproval(%s): %v", unknownPhone, err)
+	}
+	if err := f.manager.RequestApproval(ctx, unknownPhone2); err != nil {
+		t.Fatalf("RequestApproval(%s): %v", unknownPhone2, err)
+	}
+
+	if err := f.manager.HandleApprove(sdk.Transmission{
+		Trigger: "approve",
+		Text:    "!approve",
+		Sender:  maintainerPhone1,
+	}); err != nil {
+		t.Fatalf("HandleApprove(bare): %v", err)
+	}
+
+	admin := f.admin(t)
+	if contains(admin.ApprovedNumbers, unknownPhone) {
+		t.Fatalf("approved_numbers = %v must not contain the older request", admin.ApprovedNumbers)
+	}
+	if !contains(admin.ApprovedNumbers, unknownPhone2) {
+		t.Fatalf("approved_numbers = %v, want newest request %s", admin.ApprovedNumbers, unknownPhone2)
+	}
+}
+
+// TestApproveBatchRejectsUnknownIDAtomically keeps a typo from applying part
+// of a batch.
+func TestApproveBatchRejectsUnknownIDAtomically(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, []string{maintainerPhone1}, false)
+
+	if err := f.manager.RequestApproval(ctx, unknownPhone); err != nil {
+		t.Fatalf("RequestApproval(%s): %v", unknownPhone, err)
+	}
+
+	err := f.manager.HandleApprove(sdk.Transmission{
+		Trigger: "approve",
+		Text:    "!approve 1,99",
+		Sender:  maintainerPhone1,
+	})
+	requireStatus(t, err, http.StatusBadRequest)
+
+	rows := f.approvalsFor(t, unknownPhone)
+	if len(rows) != 1 || rows[0].Status != store.ApprovalPending {
+		t.Fatalf("%s rows = %+v, want still pending after a rejected batch", unknownPhone, rows)
+	}
+}
+
+// TestPendingShowsNamesAndBatchHint covers the richer listing maintainers use
+// to choose short references.
+func TestPendingShowsNamesAndBatchHint(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, []string{maintainerPhone1}, false)
+
+	if err := f.manager.RequestApprovalFrom(ctx, unknownUUID, "Tara Schick"); err != nil {
+		t.Fatalf("RequestApprovalFrom(%s): %v", unknownUUID, err)
+	}
+	if err := f.manager.RequestApproval(ctx, unknownPhone); err != nil {
+		t.Fatalf("RequestApproval(%s): %v", unknownPhone, err)
+	}
+	if err := f.manager.HandlePending(sdk.Transmission{
+		Trigger: "pending",
+		Text:    "!pending",
+		Sender:  maintainerPhone1,
+	}); err != nil {
+		t.Fatalf("HandlePending: %v", err)
+	}
+
+	responses := f.out.Responses()
+	if len(responses) != 1 {
+		t.Fatalf("pending responses = %d, want 1", len(responses))
+	}
+	text := responses[0].Text
+	for _, want := range []string{"#1", "Tara Schick", unknownUUID, "#2", unknownPhone, "1,3,4"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("pending text %q does not contain %q", text, want)
+		}
+	}
 }

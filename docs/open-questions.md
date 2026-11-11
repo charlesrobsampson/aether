@@ -10,7 +10,7 @@ can be tuned later without changing a contract.
 |---|---|---|
 | 1 | `msg` inbound forwarding when Aether is down | Persist-then-ACK, then a bounded per-profile forward worker retries network/`429`/`5xx` with backoff; failures are logged and dropped after the budget. **No spool**. `msg`'s own DB remains the manual replay source. |
 | 2 | Ingress token key | `AETHER_INGRESS_TOKEN` / `X-Aether-Token` only; the `--forward-token` flag and `MSG_FORWARD_URL` enable path were removed in A01. |
-| 3 | User `!config set` keys | `timezone`, `prefixes`, `muted`, `aliases.satellites.*`, `aliases.commands.*`. The whitelist is intentionally extensible; adding a key requires a test and a plan update. `satellite_ids` is admin-only. |
+| 3 | User `!config set` keys | `timezone`, `prefixes`, `muted`, `aliases.satellites.*`, `aliases.commands.*`. The whitelist is intentionally extensible; adding a key requires a test and a plan update. `satellite_ids` is admin-only. An explicitly empty `prefixes` list (`[]` or `""`) means no command prefix and overrides the system persona defaults. |
 | 4 | Approved group identifier | Opaque conversation ID, matched literally. Signal and openmessage formats both work without normalization. |
 | 5 | Service token for wind-predictor | `AETHER_TOKEN` env first, then a 0600 `aether.token` file in the wind-predictor config dir. |
 | 6 | Wind-predictor config surface | **User files only**: `/display_name`, `/subscriptions/*/personal_constraints/{window_start_local,window_end_local,no_fly_days}`, `/alert_timing/*`, `/alert_rules/*/{min_desirability,min_confidence,priority,sound}`. Credentials and global/station/training keys are rejected. |

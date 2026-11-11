@@ -63,11 +63,22 @@ Built-in chat commands for per-user settings: `!config list` shows effective
 values with defaults in parentheses, `!config get <key>` shows one setting,
 `!config export` prints pasteable `!config set` lines, and
 `!config set <key> <value>` changes a value. Admins can add `@<phone>` to target
-another user.
+another user. To use commands with no prefix, set `prefixes` to an empty list:
+
+```
+!config set prefixes []
+```
+
+The same works with `!config set prefixes ""`. This overrides the system
+persona prefixes for that user; commands are then typed bare, for example
+`config list`.
 
 Maintainers resolve new senders with `!pending` (or `!admin list`),
-`!approve <phone|uuid>`, and `!deny <phone|uuid>`. Admins can use
-`!admin add|remove <phone|uuid>`.
+`!approve [id[,id...]|phone|uuid]`, and `!deny [id[,id...]|phone|uuid]`.
+`!pending` numbers each request, so `!approve 1,3,4` resolves a batch, and a
+bare `!approve` resolves the newest pending request. Notifications include the
+short row ID and the sender's name and phone number when Signal exposes them.
+Admins can use `!admin add|remove <phone|uuid>`.
 
 ## Documentation
 

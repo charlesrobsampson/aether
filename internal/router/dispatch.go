@@ -70,8 +70,14 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 	}
 
 	user := cfg.Users[in.Sender]
-	prefix, prefixed := matchedPrefix(in.Text, cfg.System.Persona.Prefixes, user.Prefixes)
-	text := stripPrefixes(in.Text, cfg.System.Persona.Prefixes, user.Prefixes)
+	systemPrefixes := cfg.System.Persona.Prefixes
+	// An explicitly empty user prefix list means the user opted out of
+	// prefixes entirely, including the system persona defaults.
+	if user.Prefixes != nil && onlyEmptyPrefixes(user.Prefixes) {
+		systemPrefixes = nil
+	}
+	prefix, prefixed := matchedPrefix(in.Text, systemPrefixes, user.Prefixes)
+	text := stripPrefixes(in.Text, systemPrefixes, user.Prefixes)
 	if text == "" {
 		r.record(ctx, store.RouteLog{
 			Direction: "inbound",
@@ -612,6 +618,17 @@ func routesFromConfig(cfg *config.Config) []config.RouteEntry {
 		})
 	}
 	return routes
+}
+
+// onlyEmptyPrefixes reports whether prefixes is explicitly configured but
+// contains no usable value.
+func onlyEmptyPrefixes(prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.TrimSpace(prefix) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // matchedPrefix reports the configured prefix that text starts with, if any.

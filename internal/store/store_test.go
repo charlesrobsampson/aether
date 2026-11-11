@@ -22,7 +22,7 @@ var expectedSchema = []struct {
 		table: "approvals",
 		columns: []string{
 			"id", "phone", "maintainer", "status",
-			"requested_at", "resolved_at", "resolved_by",
+			"requested_at", "resolved_at", "resolved_by", "display_name",
 		},
 	},
 	{

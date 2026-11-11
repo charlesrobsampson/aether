@@ -874,6 +874,63 @@ func TestConfigExport(t *testing.T) {
 	})
 }
 
+// TestConfigNoPrefix covers the explicit empty prefix list: it is written as
+// [], displayed as (none), exported as a pasteable set command, and removes
+// the prefix from generated examples.
+func TestConfigNoPrefix(t *testing.T) {
+	root, cfg, st := newTestConfig(t)
+	manager := New(Options{
+		Config: func() *config.Config { return cfg },
+		Store:  st,
+	})
+
+	if err := manager.HandlePatch(sdk.Transmission{
+		Command: "set",
+		Trigger: "config",
+		Text:    `config set prefixes []`,
+		Sender:  userPhone,
+	}); err != nil {
+		t.Fatalf("HandlePatch(prefixes []): %v", err)
+	}
+
+	var user config.UserConfig
+	if err := json.Unmarshal(readUserFile(t, root, userPhone), &user); err != nil {
+		t.Fatalf("decode patched user: %v", err)
+	}
+	if user.Prefixes == nil {
+		t.Fatal("prefixes = nil, want an explicit empty list")
+	}
+	if len(user.Prefixes) != 0 {
+		t.Fatalf("prefixes = %v, want none", user.Prefixes)
+	}
+
+	cfg = reloadConfig(t, root)
+	manager, recorder := readManager(t, cfg)
+
+	if err := manager.Handle(sdk.Transmission{
+		Trigger: "config",
+		Text:    "config list",
+		Sender:  userPhone,
+	}); err != nil {
+		t.Fatalf("Handle(list): %v", err)
+	}
+	if got := recorder.last(t); !strings.Contains(got, "prefixes = (none)") {
+		t.Fatalf("list = %q, want prefixes = (none)", got)
+	}
+
+	manager, recorder = readManager(t, cfg)
+	if err := manager.Handle(sdk.Transmission{
+		Trigger: "config",
+		Text:    "config export",
+		Sender:  userPhone,
+	}); err != nil {
+		t.Fatalf("Handle(export): %v", err)
+	}
+	if got := recorder.last(t); !strings.Contains(got, "config set prefixes []") {
+		t.Fatalf("export = %q, want config set prefixes []", got)
+	}
+}
+
 func TestConfigReadRequiresSender(t *testing.T) {
 	_, cfg, _ := newTestConfig(t)
 	manager := New(Options{Config: func() *config.Config { return cfg }})
