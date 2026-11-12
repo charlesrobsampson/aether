@@ -297,3 +297,57 @@ func TestReminderValidationErrorsAreUserSafe(t *testing.T) {
 		}
 	}
 }
+
+// TestGroupReminderUsesGroupPrincipal proves a group is the reminder principal:
+// its timezone resolves the absolute time, and both the acknowledgement and the
+// fired reminder reply to the group rather than to the member who typed it.
+func TestGroupReminderUsesGroupPrincipal(t *testing.T) {
+	const groupID = "group.example"
+	start := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC) // 06:00 in America/Chicago
+
+	clock := testutil.NewFakeClock(start)
+	sender := &recordingSender{}
+	var timezoneActor string
+	manager := New(Options{
+		Client:    sender,
+		Scheduler: scheduler.New(clock),
+		Clock:     clock,
+		Timezone: func(actor string) string {
+			timezoneActor = actor
+			if actor == groupID {
+				return "America/Chicago"
+			}
+			return "UTC"
+		},
+	})
+
+	if err := manager.HandleRemind(sdk.Transmission{
+		Trigger:   "remind",
+		Text:      "remind me standup at 09:00",
+		Sender:    testSender,
+		GroupID:   groupID,
+		Satellite: testSatellite,
+	}); err != nil {
+		t.Fatalf("HandleRemind: %v", err)
+	}
+	if timezoneActor != groupID {
+		t.Errorf("timezone resolved for %q, want the group %q", timezoneActor, groupID)
+	}
+
+	ack := requireResponses(t, sender, 1)[0]
+	if len(ack.Recipients) != 1 || ack.Recipients[0] != groupID {
+		t.Errorf("ack recipients = %v, want [%s]", ack.Recipients, groupID)
+	}
+	if !strings.Contains(ack.Text, "09:00") {
+		t.Errorf("ack text = %q, want the group's 09:00 time", ack.Text)
+	}
+
+	clock.Advance(3 * time.Hour)
+	fired := requireResponses(t, sender, 2)[1]
+	if len(fired.Recipients) != 1 || fired.Recipients[0] != groupID {
+		t.Errorf("fired recipients = %v, want [%s]", fired.Recipients, groupID)
+	}
+	if fired.Text != "standup" {
+		t.Errorf("fired text = %q, want standup", fired.Text)
+	}
+}

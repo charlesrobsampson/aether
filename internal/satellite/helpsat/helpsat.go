@@ -81,17 +81,23 @@ func (m *Manager) HandleHelp(t sdk.Transmission) error {
 	if sender == "" {
 		return sdk.Userf("Help needs a sender.")
 	}
+	// A group is its own principal: help shows the group's aliases and prefix,
+	// and its role is capped at User.
+	actor := t.Actor()
+	if actor == "" {
+		actor = sender
+	}
 	cfg := m.configSnapshot()
-	role := auth.ChatRoleOf(cfg, sender, t.GroupID)
-	prefix := helpPrefix(cfg)
+	role := auth.ChatRoleOf(cfg, actor, t.GroupID)
+	prefix := helpPrefix(cfg, actor)
 
-	entries := m.entries(cfg, sender, role)
+	entries := m.entries(cfg, actor, role)
 	topic := helpTopic(t)
 
 	if topic == "" {
 		return m.send(t, renderList(entries, prefix))
 	}
-	entry, ok := findEntry(entries, resolveAlias(cfg, sender, topic))
+	entry, ok := findEntry(entries, resolveAlias(cfg, actor, topic))
 	if !ok {
 		hint := fmt.Sprintf("No command %q. Send %q for the list.", topic, prefix+"help")
 		if suggestion := closestEntry(entries, topic); suggestion != "" {
@@ -313,9 +319,19 @@ func truncate(text string) string {
 }
 
 // helpPrefix returns the first configured command prefix, defaulting to "!".
-func helpPrefix(cfg *config.Config) string {
+func helpPrefix(cfg *config.Config, actor string) string {
 	if cfg == nil {
 		return "!"
+	}
+	// An explicitly empty user or group prefix list means commands need no
+	// prefix and overrides the system persona defaults.
+	if user, ok := cfg.Users[actor]; ok && user.Prefixes != nil {
+		for _, prefix := range user.Prefixes {
+			if prefix = strings.TrimSpace(prefix); prefix != "" {
+				return prefix
+			}
+		}
+		return ""
 	}
 	for _, prefix := range cfg.System.Persona.Prefixes {
 		if strings.TrimSpace(prefix) != "" {

@@ -90,15 +90,19 @@ and phone number when Signal exposes them. Approving a group writes
 Group messages answer in the group by default. A satellite can still address
 an individual explicitly by using that recipient in its response. In a group
 the bot only responds when it is mentioned with `@` (Signal's native mention
-or a literal `@<persona name>`); other group messages are ignored. An approved
-sender's first message in an unapproved group creates a group approval request
-instead of dispatching.
+or a literal `@<persona name>`); other group messages are ignored. An
+unapproved group's first message creates a group approval request instead of
+dispatching, regardless of who sent it.
 
-Group chats are capped at User privileges: admin and maintainer actions
-(`!admin`, `!approve`, `!deny`, `!pending`, editing another user's config) must
-originate from a private chat. Group names are resolved from the Signal groups
-API when the transport does not include one, so approvals and logs show the
-group's display name rather than its opaque ID.
+A group is its own principal, like another phone number. It has its own
+settings under `groups/` (`timezone`, `prefixes`, `muted`, and aliases), and any
+member of an approved group can view and change them. The group's role is
+always User: administrative commands (`!admin`, `!approve`, `!deny`,
+`!pending`) and admin-target config edits are dropped silently in groups, with
+no reply or reaction. Those actions must originate from a private chat. Group
+names are resolved from the Signal groups API when the transport does not
+include one, so approvals and logs show the group's display name rather than
+its opaque ID.
 
 ## Documentation
 

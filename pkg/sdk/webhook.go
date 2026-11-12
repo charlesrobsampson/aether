@@ -49,6 +49,16 @@ func (t Transmission) ReplyTo() string {
 	return strings.TrimSpace(t.Sender)
 }
 
+// Actor returns the conversation's principal identity. A group is its own
+// principal, so the group's settings and role are shared by every member; a
+// direct chat's principal is the sender.
+func (t Transmission) Actor() string {
+	if group := strings.TrimSpace(t.GroupID); group != "" {
+		return group
+	}
+	return strings.TrimSpace(t.Sender)
+}
+
 // SessionAction accompanies a Response that changes conversation state.
 type SessionAction struct {
 	Action     string `json:"action"`

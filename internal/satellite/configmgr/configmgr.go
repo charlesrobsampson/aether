@@ -169,19 +169,29 @@ func (m *Manager) HandlePatch(t sdk.Transmission) error {
 
 // handleSet applies one parsed set command.
 func (m *Manager) handleSet(t sdk.Transmission, command setCommand) error {
-	cfg, sender, role, err := m.authorize(t)
+	cfg, actor, sender, role, err := m.authorize(t)
 	if err != nil {
 		return err
 	}
 
 	if name, key, ok := splitSatelliteTarget(cfg, command.target); ok {
 		if role < auth.Admin {
+			if strings.TrimSpace(t.GroupID) != "" {
+				return sdk.ErrIgnored
+			}
 			return statusError(http.StatusForbidden, "config: admin role required to edit satellite configuration")
 		}
-		return m.forward(context.Background(), cfg, sender, name, key, command.value)
+		return m.forward(context.Background(), cfg, actor, sender, name, key, command.value)
 	}
 
-	targetPhone, err := resolveTargetPhone(sender, role, command.phone, "edit")
+	// A group is its own principal. Targeting anyone else, or editing the
+	// admin-managed satellite mapping, is an administrative action: groups
+	// ignore it without exposing that the command exists.
+	if groupAdminAttempt(t.GroupID, actor, command.phone, command.target) {
+		return sdk.ErrIgnored
+	}
+
+	targetPhone, err := resolveTargetPhone(actor, role, command.phone, "edit")
 	if err != nil {
 		return err
 	}
@@ -189,23 +199,42 @@ func (m *Manager) handleSet(t sdk.Transmission, command setCommand) error {
 	return m.applyLocal(context.Background(), cfg, sender, targetPhone, command.target, command.value)
 }
 
-// authorize resolves the active config and checks that the sender may use
-// !config at all.
-func (m *Manager) authorize(t sdk.Transmission) (*config.Config, string, auth.Role, error) {
+// authorize resolves the active config and checks that the conversation may
+// use !config. The actor is the conversation principal (the group itself, or
+// the sender in a direct chat); the sender is kept for auditing.
+func (m *Manager) authorize(t sdk.Transmission) (*config.Config, string, string, auth.Role, error) {
 	cfg := m.configSnapshot()
 	if cfg == nil || strings.TrimSpace(cfg.Root) == "" {
-		return nil, "", auth.Denied, statusError(http.StatusServiceUnavailable, "config: configuration is not loaded")
+		return nil, "", "", auth.Denied, statusError(http.StatusServiceUnavailable, "config: configuration is not loaded")
 	}
 
 	sender := strings.TrimSpace(t.Sender)
 	if sender == "" {
-		return nil, "", auth.Denied, statusError(http.StatusUnauthorized, "config: sender is required")
+		return nil, "", "", auth.Denied, statusError(http.StatusUnauthorized, "config: sender is required")
 	}
-	role := auth.ChatRoleOf(cfg, sender, t.GroupID)
+	actor := t.Actor()
+	if actor == "" {
+		actor = sender
+	}
+	role := auth.ChatRoleOf(cfg, actor, t.GroupID)
 	if role < auth.User {
-		return nil, "", auth.Denied, statusError(http.StatusForbidden, "config: sender is not authorized")
+		return nil, "", "", auth.Denied, statusError(http.StatusForbidden, "config: sender is not authorized")
 	}
-	return cfg, sender, role, nil
+	return cfg, actor, sender, role, nil
+}
+
+// groupAdminAttempt reports whether a group message targets anything other
+// than the group's own settings. Those requests are administrative and must be
+// ignored silently.
+func groupAdminAttempt(groupID, actor, phone, key string) bool {
+	if strings.TrimSpace(groupID) == "" {
+		return false
+	}
+	if target := strings.TrimSpace(phone); target != "" && target != actor {
+		return true
+	}
+	key = strings.TrimSpace(key)
+	return key == "satellite_ids" || strings.HasPrefix(key, "satellite_ids.")
 }
 
 // resolveTargetPhone returns the user file a set command edits and enforces
@@ -331,10 +360,10 @@ func splitSatelliteTarget(cfg *config.Config, target string) (name, key string, 
 	return name, target[dot+1:], true
 }
 
-// applyLocal patches one users/<phone>.json file and records the audit row.
+// applyLocal patches one user or group settings file and records the audit row.
 func (m *Manager) applyLocal(ctx context.Context, cfg *config.Config, appliedBy, phone, key, raw string) error {
-	dir := filepath.Join(cfg.Root, "users")
-	path := filepath.Join(dir, phone+".json")
+	path := config.UserFilePath(cfg.Root, phone)
+	dir := filepath.Dir(path)
 
 	existing := []byte("{}\n")
 	if data, err := os.ReadFile(path); err == nil {
@@ -461,19 +490,21 @@ func buildAliasPatch(existing []byte, group, alias, raw string) ([]sdk.Operation
 }
 
 // forward posts {user, patch} to the satellite's config endpoint (plan §3.12).
-// The role check happened in HandlePatch; the satellite owns schema validation.
-func (m *Manager) forward(ctx context.Context, cfg *config.Config, sender, name, key, raw string) error {
+// The role check happened in handleSet; the satellite owns schema validation.
+// actor supplies the satellite mapping and the token subject, while appliedBy
+// is the human sender recorded in the audit row.
+func (m *Manager) forward(ctx context.Context, cfg *config.Config, actor, appliedBy, name, key, raw string) error {
 	satellite, ok := cfg.Satellites[name]
 	if !ok {
 		return statusError(http.StatusBadRequest, "config: unknown satellite %q", name)
 	}
 
 	userID := ""
-	if user, ok := cfg.Users[sender]; ok {
+	if user, ok := cfg.Users[actor]; ok {
 		userID = strings.TrimSpace(user.SatelliteIDs[name])
 	}
 	if userID == "" {
-		return statusError(http.StatusBadRequest, "config: sender %s is not mapped to satellite %q", sender, name)
+		return statusError(http.StatusBadRequest, "config: sender %s is not mapped to satellite %q", actor, name)
 	}
 
 	endpoint := strings.TrimSpace(satellite.Endpoint)
@@ -492,7 +523,7 @@ func (m *Manager) forward(ctx context.Context, cfg *config.Config, sender, name,
 	}
 	ops := []sdk.Operation{{Op: "add", Path: pointer, Value: value}}
 
-	token, err := auth.Issue(cfg.System.Auth.JWTSecret, sender, auth.Admin, forwardTokenTTL)
+	token, err := auth.Issue(cfg.System.Auth.JWTSecret, actor, auth.Admin, forwardTokenTTL)
 	if err != nil {
 		return statusError(http.StatusInternalServerError, "config: mint forwarding token: %v", err)
 	}
@@ -521,7 +552,7 @@ func (m *Manager) forward(ctx context.Context, cfg *config.Config, sender, name,
 		return statusError(http.StatusBadGateway, "config: forward to %s: status %d", name, resp.StatusCode)
 	}
 
-	m.audit(ctx, sender, sender, ops)
+	m.audit(ctx, actor, appliedBy, ops)
 	return nil
 }
 

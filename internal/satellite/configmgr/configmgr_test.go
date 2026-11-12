@@ -961,36 +961,74 @@ func TestConfigSuccessReactionFor(t *testing.T) {
 	}
 }
 
-// TestConfigGroupCapsAdminRole proves an admin in a group chat cannot edit
-// another user, while still being able to edit their own settings at User level.
-func TestConfigGroupCapsAdminRole(t *testing.T) {
+// TestConfigGroupPrincipal proves a group is its own settings identity: any
+// member can edit the group's settings, they are stored under groups/, and
+// administrative targets are ignored without a user-facing error.
+func TestConfigGroupPrincipal(t *testing.T) {
+	const groupID = "group.FyZ5D/fEjYhE0+7AvLZgAD3w88fRJ08xx1otqxDCVZE="
+
 	root, cfg, st := newTestConfig(t)
+	cfg.Admin.ApprovedGroups = []string{groupID}
 	manager := New(Options{
 		Config: func() *config.Config { return cfg },
 		Store:  st,
 	})
 
+	// A plain member edits the group's settings.
 	err := manager.HandlePatch(sdk.Transmission{
 		Command: "set",
 		Trigger: "config",
-		Text:    "config set @" + userPhone + " timezone Europe/Paris",
-		Sender:  adminPhone,
-		GroupID: "group.example",
-	})
-	requireStatus(t, err, http.StatusForbidden)
-	if got := readUserFile(t, root, userPhone); !strings.Contains(string(got), "America/Chicago") {
-		t.Fatalf("group edit changed another user: %s", got)
-	}
-
-	err = manager.HandlePatch(sdk.Transmission{
-		Command: "set",
-		Trigger: "config",
 		Text:    "config set timezone Europe/Paris",
-		Sender:  adminPhone,
-		GroupID: "group.example",
+		Sender:  userPhone,
+		GroupID: groupID,
 	})
 	requireStatus(t, err, 0)
-	if got := readUserFile(t, root, adminPhone); !strings.Contains(string(got), "Europe/Paris") {
-		t.Fatalf("group self edit did not apply: %s", got)
+
+	groupPath := config.UserFilePath(root, groupID)
+	raw, err := os.ReadFile(groupPath)
+	if err != nil {
+		t.Fatalf("read group settings: %v", err)
+	}
+	var groupUser config.UserConfig
+	if err := json.Unmarshal(raw, &groupUser); err != nil {
+		t.Fatalf("decode group settings: %v", err)
+	}
+	if groupUser.Timezone != "Europe/Paris" {
+		t.Fatalf("group timezone = %q, want Europe/Paris", groupUser.Timezone)
+	}
+
+	// The same edit must not touch the sender's own file.
+	if got := readUserFile(t, root, userPhone); strings.Contains(string(got), "Europe/Paris") {
+		t.Fatalf("group edit leaked into the sender's user file: %s", got)
+	}
+
+	// Administrative targets are ignored silently, not rejected with text.
+	ignored := []sdk.Transmission{
+		{
+			Command: "set",
+			Trigger: "config",
+			Text:    "config set @" + adminPhone + " timezone Europe/Paris",
+			Sender:  userPhone,
+			GroupID: groupID,
+		},
+		{
+			Command: "list",
+			Trigger: "config",
+			Text:    "config list @" + adminPhone,
+			Sender:  userPhone,
+			GroupID: groupID,
+		},
+		{
+			Command: "set",
+			Trigger: "config",
+			Text:    "config set satellite_ids.wind alice",
+			Sender:  userPhone,
+			GroupID: groupID,
+		},
+	}
+	for _, transmission := range ignored {
+		if err := manager.Handle(transmission); !errors.Is(err, sdk.ErrIgnored) {
+			t.Fatalf("Handle(%q) = %v, want sdk.ErrIgnored", transmission.Text, err)
+		}
 	}
 }

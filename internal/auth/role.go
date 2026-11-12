@@ -47,16 +47,26 @@ func RoleOf(cfg *config.Config, phone string) Role {
 
 // ChatRoleOf returns the effective role for a message in a conversation.
 //
-// Group chats are capped at User: administrative and maintainer actions
-// (approvals, editing other users, system notifications) must originate from a
-// private chat so they cannot be triggered or observed by other group members.
-// Direct chats return the same role as RoleOf.
-func ChatRoleOf(cfg *config.Config, phone, groupID string) Role {
-	role := RoleOf(cfg, phone)
-	if strings.TrimSpace(groupID) != "" && role > User {
+// A group chat is its own principal: an approved group acts as an approved
+// user, so every member can use and edit the group's settings, while an
+// unapproved or denied group has no access. Administrative roles are never
+// granted through a group; direct chats return the same role as RoleOf.
+func ChatRoleOf(cfg *config.Config, identity, groupID string) Role {
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return RoleOf(cfg, identity)
+	}
+	// An explicitly denied sender stays blocked even inside an approved group.
+	if IsDenied(cfg, identity) {
+		return Denied
+	}
+	if GroupDenied(cfg, groupID) {
+		return Denied
+	}
+	if GroupApproved(cfg, groupID) {
 		return User
 	}
-	return role
+	return Denied
 }
 
 // CheckAccess reports whether phone has at least the needed role.

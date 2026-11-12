@@ -25,6 +25,16 @@ type Inbound struct {
 	TimestampMS int64 `json:"timestamp_ms,omitempty"`
 }
 
+// Actor returns the conversation's principal identity. A group is its own
+// principal, so the group's settings and role are shared by every member; a
+// direct chat's principal is the sender.
+func (in Inbound) Actor() string {
+	if group := strings.TrimSpace(in.GroupID); group != "" {
+		return group
+	}
+	return strings.TrimSpace(in.Sender)
+}
+
 // Outbound represents a message to be sent.
 type Outbound struct {
 	Recipients  []string `json:"recipients"`

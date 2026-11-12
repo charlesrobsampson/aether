@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charlesrobsampson/aether/internal/auth"
 	"github.com/charlesrobsampson/aether/internal/config"
 	"github.com/charlesrobsampson/aether/internal/metrics"
 	"github.com/charlesrobsampson/aether/internal/model"
@@ -91,7 +92,7 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 		rawText = mentionText
 	}
 
-	user := cfg.Users[in.Sender]
+	user := cfg.Users[in.Actor()]
 	systemPrefixes := cfg.System.Persona.Prefixes
 	// An explicitly empty user prefix list means the user opted out of
 	// prefixes entirely, including the system persona defaults.
@@ -112,7 +113,7 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 		return
 	}
 
-	if sess, reply, ok := r.resolveSession(in.Sender, text); ok {
+	if sess, reply, ok := r.resolveSession(in.Actor(), text); ok {
 		r.dispatchSession(ctx, cfg, in, user, sess, reply)
 		return
 	}
@@ -212,6 +213,15 @@ func (r *Router) dispatchBuiltin(ctx context.Context, in model.Inbound, builtin 
 		Text:      text,
 		Status:    "dispatched",
 	}
+	// A group is capped at User. Administrative commands are dropped before the
+	// handler runs: no reply and no reaction, so the group never learns the
+	// command exists.
+	if strings.TrimSpace(in.GroupID) != "" && builtin.RequiredRole > auth.User {
+		record.Status = "dropped"
+		record.Error = "group privilege cap"
+		r.record(ctx, record)
+		return
+	}
 	if builtin.Handle == nil {
 		record.Status = "failed"
 		record.Error = "built-in handler is not configured"
@@ -221,6 +231,12 @@ func (r *Router) dispatchBuiltin(ctx context.Context, in model.Inbound, builtin 
 		return
 	}
 	if err := builtin.Handle(ctx, in, text); err != nil {
+		if errors.Is(err, sdk.ErrIgnored) {
+			record.Status = "dropped"
+			record.Error = "ignored"
+			r.record(ctx, record)
+			return
+		}
 		record.Status = "failed"
 		record.Error = err.Error()
 		r.observeFailure(metrics.DispatchReasonBuiltin)

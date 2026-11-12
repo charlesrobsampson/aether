@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/charlesrobsampson/aether/internal/auth"
 	"github.com/charlesrobsampson/aether/internal/config"
 	"github.com/charlesrobsampson/aether/internal/metrics"
 	"github.com/charlesrobsampson/aether/internal/model"
@@ -35,6 +36,10 @@ type Builtin struct {
 	Satellite string
 	// Trigger is the first token that selects this handler.
 	Trigger string
+	// RequiredRole is the minimum role that may run the command. A group chat
+	// silently drops any command above User before Handle runs, so
+	// administrative commands are neither exposed nor acknowledged there.
+	RequiredRole auth.Role
 	// Handle runs the command.
 	Handle func(context.Context, model.Inbound, string) error
 	// SuccessReaction, when set, is attached to the inbound message after a

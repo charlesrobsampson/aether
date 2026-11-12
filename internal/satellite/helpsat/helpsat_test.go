@@ -40,6 +40,9 @@ func testManager(t *testing.T, role auth.Role) (*Manager, *recordingSender) {
 
 	cfg := &config.Config{}
 	cfg.System.Persona.Prefixes = []string{"!"}
+	// A group is its own principal; this fixture marks group.example approved
+	// so group tests get User-level access.
+	cfg.Admin.ApprovedGroups = []string{"group.example"}
 	cfg.Satellites = map[string]config.SatelliteConfig{
 		"weather": {
 			Name:        "weather",

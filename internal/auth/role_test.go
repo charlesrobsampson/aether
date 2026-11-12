@@ -91,12 +91,18 @@ func TestChatRoleOf(t *testing.T) {
 		adminPhone      = "+15555550101"
 		maintainerPhone = "+15555550103"
 		groupID         = "group.example"
+		deniedGroupID   = "group.denied"
+		newGroupID      = "group.new"
+		deniedPhone     = "+15555550999"
 	)
 
 	cfg := &config.Config{
 		Admin: config.AdminConfig{
 			Admins:          []string{adminPhone},
 			ApprovedNumbers: []string{userPhone, adminPhone, maintainerPhone},
+			DeniedNumbers:   []string{deniedPhone},
+			ApprovedGroups:  []string{groupID},
+			DeniedGroups:    []string{deniedGroupID},
 		},
 		Maintainer: config.MaintainerConfig{Maintainers: []string{maintainerPhone}},
 	}
@@ -110,6 +116,10 @@ func TestChatRoleOf(t *testing.T) {
 		{name: "user in group", phone: userPhone, groupID: groupID, want: User},
 		{name: "admin in group is capped", phone: adminPhone, groupID: groupID, want: User},
 		{name: "maintainer in group is capped", phone: maintainerPhone, groupID: groupID, want: User},
+		{name: "unknown sender in approved group is a user", phone: "+15555550199", groupID: groupID, want: User},
+		{name: "denied sender in approved group stays denied", phone: deniedPhone, groupID: groupID, want: Denied},
+		{name: "denied group is denied", phone: adminPhone, groupID: deniedGroupID, want: Denied},
+		{name: "unapproved group is denied", phone: adminPhone, groupID: newGroupID, want: Denied},
 		{name: "admin in private keeps role", phone: adminPhone, want: Admin},
 		{name: "maintainer in private keeps role", phone: maintainerPhone, want: Maintainer},
 	}

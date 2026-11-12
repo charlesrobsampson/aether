@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charlesrobsampson/aether/internal/auth"
 	"github.com/charlesrobsampson/aether/internal/config"
 	"github.com/charlesrobsampson/aether/internal/model"
 	"github.com/charlesrobsampson/aether/pkg/sdk"
@@ -207,5 +208,89 @@ func TestBuiltinReactionForSelectsByCommand(t *testing.T) {
 	})
 	if len(reactions) != 1 || reactions[0] != "👍" {
 		t.Fatalf("reactions = %v, want [👍]", reactions)
+	}
+}
+
+// TestGroupBuiltinSilence proves a group never runs or acknowledges an
+// administrative built-in, and that a handler can opt out with ErrIgnored.
+func TestGroupBuiltinSilence(t *testing.T) {
+	const groupID = "group.example"
+
+	var replies, reactions []string
+	var privilegedRuns, userRuns, ignoredRuns int
+
+	cfg := &config.Config{}
+	cfg.System.Persona.Prefixes = []string{"!"}
+	cfg.Admin.ApprovedGroups = []string{groupID}
+	cfg.Users = map[string]config.UserConfig{groupID: {Prefixes: []string{"!"}}}
+
+	rt := New(Options{
+		Config: func() *config.Config { return cfg },
+		Reply: func(_ context.Context, _ model.Inbound, text string) error {
+			replies = append(replies, text)
+			return nil
+		},
+		React: func(_ context.Context, _ model.Inbound, emoji string) error {
+			reactions = append(reactions, emoji)
+			return nil
+		},
+		Builtins: []Builtin{
+			{
+				Satellite:       "approve",
+				Trigger:         "approve",
+				RequiredRole:    auth.Maintainer,
+				SuccessReaction: "👍",
+				Handle: func(context.Context, model.Inbound, string) error {
+					privilegedRuns++
+					return nil
+				},
+			},
+			{
+				Satellite:       "test",
+				Trigger:         "test",
+				RequiredRole:    auth.User,
+				SuccessReaction: "👍",
+				Handle: func(context.Context, model.Inbound, string) error {
+					userRuns++
+					return nil
+				},
+			},
+			{
+				Satellite:       "config",
+				Trigger:         "config",
+				RequiredRole:    auth.User,
+				SuccessReaction: "👍",
+				Handle: func(context.Context, model.Inbound, string) error {
+					ignoredRuns++
+					return sdk.ErrIgnored
+				},
+			},
+		},
+	})
+
+	for _, text := range []string{"!approve 1", "!test", "!config set @+15555550103 timezone UTC"} {
+		rt.Dispatch(context.Background(), model.Inbound{
+			Sender:     "+15555550102",
+			Text:       text,
+			GroupID:    groupID,
+			MentionsMe: true,
+			MessageID:  "group-silence-" + text,
+		})
+	}
+
+	if privilegedRuns != 0 {
+		t.Errorf("administrative built-in ran %d times in a group", privilegedRuns)
+	}
+	if userRuns != 1 {
+		t.Errorf("user built-in ran %d times, want 1", userRuns)
+	}
+	if ignoredRuns != 1 {
+		t.Errorf("ignored built-in ran %d times, want 1", ignoredRuns)
+	}
+	if len(replies) != 0 {
+		t.Errorf("group produced replies: %v", replies)
+	}
+	if len(reactions) != 1 || reactions[0] != "👍" {
+		t.Errorf("group reactions = %v, want only the user command's 👍", reactions)
 	}
 }

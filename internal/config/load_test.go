@@ -279,3 +279,42 @@ func TestLoadConfig(t *testing.T) {
 		}
 	})
 }
+
+// TestLoadConfigGroups proves a group's settings file loads into the same Users
+// map under the full group ID, decoded from its filesystem-safe file name.
+func TestLoadConfigGroups(t *testing.T) {
+	const groupID = "group.FyZ5D/fEjYhE0+7AvLZgAD3w88fRJ08xx1otqxDCVZE="
+
+	root := t.TempDir()
+	writeConfigFile(t, filepath.Join(root, "system.json"), `{"server": {"port": 8080}}`)
+	writeConfigFile(t, filepath.Join(root, "groups", GroupFileKey(groupID)+".json"), `{
+		"timezone": "Europe/London",
+		"prefixes": [],
+		"aliases": {"commands": {"g": "fly"}}
+	}`)
+
+	cfg, err := LoadConfig(root)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	group, ok := cfg.Users[groupID]
+	if !ok {
+		t.Fatalf("Users missing group %q: %v", groupID, cfg.Users)
+	}
+	if group.Timezone != "Europe/London" {
+		t.Errorf("group timezone = %q, want Europe/London", group.Timezone)
+	}
+	if group.Prefixes == nil || len(group.Prefixes) != 0 {
+		t.Errorf("group prefixes = %#v, want explicitly empty", group.Prefixes)
+	}
+	if got := group.Aliases.Commands["g"]; got != "fly" {
+		t.Errorf("group alias g = %q, want fly", got)
+	}
+
+	if got := UserFilePath(root, groupID); got != filepath.Join(root, "groups", GroupFileKey(groupID)+".json") {
+		t.Errorf("UserFilePath(group) = %q", got)
+	}
+	if got := UserFilePath(root, "+15555550102"); got != filepath.Join(root, "users", "+15555550102.json") {
+		t.Errorf("UserFilePath(phone) = %q", got)
+	}
+}

@@ -136,34 +136,36 @@ func (h *receiveHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	inbound = canonicalizeSender(inbound)
 
+	groupID := strings.TrimSpace(inbound.GroupID)
 	switch {
 	case auth.IsDenied(cfg, inbound.Sender):
-		// Denied wins even when the number also appears in approved_numbers.
+		// Denied wins everywhere, including in an approved group.
 		h.options.Metrics.IncReceiveRequest(metrics.ReceiveAccepted)
 		w.WriteHeader(http.StatusAccepted)
-	case auth.RoleOf(cfg, inbound.Sender) == auth.Denied:
-		if h.options.OnUnknown != nil {
-			h.options.OnUnknown(UnknownSender{
-				Sender: inbound.Sender,
-				Name:   inbound.SenderName,
-				Number: inbound.SenderNumber,
-			})
-		}
-		h.options.Metrics.IncReceiveRequest(metrics.ReceiveAccepted)
-		w.WriteHeader(http.StatusAccepted)
-	case strings.TrimSpace(inbound.GroupID) != "" && auth.GroupDenied(cfg, inbound.GroupID):
+	case groupID != "" && auth.GroupDenied(cfg, groupID):
 		// A denied group is dropped silently, just like a denied sender.
 		h.options.Metrics.IncReceiveRequest(metrics.ReceiveAccepted)
 		w.WriteHeader(http.StatusAccepted)
-	case strings.TrimSpace(inbound.GroupID) != "" && !auth.GroupApproved(cfg, inbound.GroupID):
-		// An approved sender in a new group asks the maintainer to approve the
-		// group. The message is not dispatched until it is approved.
+	case groupID != "" && !auth.GroupApproved(cfg, groupID):
+		// An unapproved group asks the maintainer to approve the group. The
+		// message is not dispatched until it is approved; the sender does not
+		// need a separate approval because the group is the principal.
 		if h.options.OnUnknownGroup != nil {
 			h.options.OnUnknownGroup(UnknownGroup{
 				GroupID:    inbound.GroupID,
 				Name:       inbound.GroupName,
 				Sender:     inbound.Sender,
 				SenderName: inbound.SenderName,
+			})
+		}
+		h.options.Metrics.IncReceiveRequest(metrics.ReceiveAccepted)
+		w.WriteHeader(http.StatusAccepted)
+	case groupID == "" && auth.RoleOf(cfg, inbound.Sender) == auth.Denied:
+		if h.options.OnUnknown != nil {
+			h.options.OnUnknown(UnknownSender{
+				Sender: inbound.Sender,
+				Name:   inbound.SenderName,
+				Number: inbound.SenderNumber,
 			})
 		}
 		h.options.Metrics.IncReceiveRequest(metrics.ReceiveAccepted)

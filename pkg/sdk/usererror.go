@@ -5,6 +5,11 @@ import (
 	"fmt"
 )
 
+// ErrIgnored tells the router to drop a command without any reply or reaction.
+// Handlers return it when a group message attempts an administrative action:
+// groups must not expose or acknowledge privileged commands.
+var ErrIgnored = errors.New("sdk: command ignored")
+
 // UserError is a command failure whose message is safe to send back to the
 // user. Handlers should wrap validation and usage problems in Userf; internal
 // failures stay plain errors and are only written to the route log.

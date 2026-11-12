@@ -46,6 +46,24 @@ func LoadConfig(root string) (*Config, error) {
 		return nil, err
 	}
 
+	// A group is its own principal. Its settings live in groups/ with a
+	// filesystem-safe encoding of the opaque group ID, but load into the same
+	// Users map so the rest of Aether treats a group like another phone.
+	if err := loadJSONDir(filepath.Join(root, "groups"), func(key string, data []byte) error {
+		groupID, ok := DecodeGroupFileKey(key)
+		if !ok {
+			return fmt.Errorf("group file %q does not encode a group ID", key)
+		}
+		var user UserConfig
+		if err := json.Unmarshal(data, &user); err != nil {
+			return err
+		}
+		cfg.Users[groupID] = user
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
 	if err := loadJSONDir(filepath.Join(root, "satellites"), func(key string, data []byte) error {
 		var satellite SatelliteConfig
 		if err := json.Unmarshal(data, &satellite); err != nil {

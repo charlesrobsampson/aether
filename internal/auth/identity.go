@@ -35,9 +35,15 @@ func IsUUID(value string) bool {
 	return true
 }
 
-// ValidIdentity reports whether value can identify a sender. Both phone
-// numbers and Signal UUIDs are accepted because either may arrive as the
-// transport's source.
+// IsGroupID reports whether value names a Signal group conversation. Group
+// IDs are opaque and matched literally.
+func IsGroupID(value string) bool {
+	return strings.HasPrefix(strings.TrimSpace(value), "group.")
+}
+
+// ValidIdentity reports whether value can identify a sender or conversation.
+// Phone numbers, Signal UUIDs, and group IDs are accepted because any of them
+// may arrive as the transport's identity.
 func ValidIdentity(value string) bool {
-	return IsPhone(value) || IsUUID(value)
+	return IsPhone(value) || IsUUID(value) || IsGroupID(value)
 }

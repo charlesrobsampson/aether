@@ -443,10 +443,11 @@ func newMessenger(cfg *config.Config) (transport.Messenger, error) {
 // builtins returns the internal command handlers in precedence order. They run
 // before any file-registered satellite with the same trigger (plan §3.6).
 func builtins(configManager *configmgr.Manager, adminManager *adminmgr.Manager, testManager *testsat.Manager, helpManager *helpsat.Manager) []router.Builtin {
-	wrap := func(satellite, trigger, reaction, fallback string, run func(sdk.Transmission) error) router.Builtin {
+	wrap := func(satellite, trigger string, role auth.Role, reaction, fallback string, run func(sdk.Transmission) error) router.Builtin {
 		return router.Builtin{
 			Satellite:       satellite,
 			Trigger:         trigger,
+			RequiredRole:    role,
 			SuccessReaction: reaction,
 			SuccessText:     fallback,
 			Handle: func(_ context.Context, in model.Inbound, text string) error {
@@ -470,19 +471,19 @@ func builtins(configManager *configmgr.Manager, adminManager *adminmgr.Manager, 
 
 	return []router.Builtin{
 		withReactionFor(
-			wrap("config", "config", "👍", "Configuration updated.", configManager.Handle),
+			wrap("config", "config", auth.User, "👍", "Configuration updated.", configManager.Handle),
 			configmgr.SuccessReactionFor,
 		),
 		withReactionFor(
-			wrap("admin", "admin", "👍", "Done.", adminManager.HandleAdmin),
+			wrap("admin", "admin", auth.Admin, "👍", "Done.", adminManager.HandleAdmin),
 			adminmgr.SuccessReactionFor,
 		),
-		wrap("approve", "approve", "👍", "Approved.", adminManager.HandleApprove),
-		wrap("deny", "deny", "👍", "Denied.", adminManager.HandleDeny),
-		wrap("pending", "pending", "", "", adminManager.HandlePending),
-		wrap("remind", "remind", "👍", "Reminder set.", testManager.HandleRemind),
-		wrap("test", "test", "", "", testManager.HandleTest),
-		wrap("help", "help", "", "", helpManager.HandleHelp),
+		wrap("approve", "approve", auth.Maintainer, "👍", "Approved.", adminManager.HandleApprove),
+		wrap("deny", "deny", auth.Maintainer, "👍", "Denied.", adminManager.HandleDeny),
+		wrap("pending", "pending", auth.Maintainer, "", "", adminManager.HandlePending),
+		wrap("remind", "remind", auth.User, "👍", "Reminder set.", testManager.HandleRemind),
+		wrap("test", "test", auth.User, "", "", testManager.HandleTest),
+		wrap("help", "help", auth.User, "", "", helpManager.HandleHelp),
 	}
 }
 

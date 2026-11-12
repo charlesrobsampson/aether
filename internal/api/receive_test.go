@@ -620,25 +620,33 @@ func TestReceiveMetrics(t *testing.T) {
 	}
 }
 
-// TestReceiveGroupAuthorization proves an approved sender in an unapproved
-// group creates exactly one group approval request, while approved groups
-// dispatch and denied groups are dropped silently.
+// TestReceiveGroupAuthorization proves the group is the principal: an
+// unapproved group creates one group approval request regardless of the
+// sender, approved groups dispatch any non-denied member, and denied senders or
+// groups are dropped silently.
 func TestReceiveGroupAuthorization(t *testing.T) {
 	const (
 		approved = "+15555550102"
+		unknown  = "+15555550199"
+		denied   = "+15555550999"
 		groupID  = "group.FyZ5D/fEjYhE0+7AvLZgAD3w88fRJ08xx1otqxDCVZE="
 	)
 
 	tests := []struct {
-		name        string
-		approved    []string
-		denied      []string
-		wantHandled int
-		wantGroup   int
+		name          string
+		sender        string
+		approved      []string
+		deniedNumbers []string
+		denied        []string
+		wantHandled   int
+		wantGroup     int
 	}{
-		{name: "unapproved group requests approval", wantGroup: 1},
-		{name: "approved group dispatches", approved: []string{groupID}, wantHandled: 1},
-		{name: "denied group drops silently", denied: []string{groupID}},
+		{name: "unapproved group requests approval", sender: approved, wantGroup: 1},
+		{name: "unknown sender in unapproved group requests group approval", sender: unknown, wantGroup: 1},
+		{name: "approved group dispatches", sender: approved, approved: []string{groupID}, wantHandled: 1},
+		{name: "unknown sender in approved group dispatches", sender: unknown, approved: []string{groupID}, wantHandled: 1},
+		{name: "denied sender in approved group drops", sender: denied, approved: []string{groupID}, deniedNumbers: []string{denied}},
+		{name: "denied group drops silently", sender: approved, denied: []string{groupID}},
 	}
 
 	for _, tc := range tests {
@@ -646,6 +654,7 @@ func TestReceiveGroupAuthorization(t *testing.T) {
 			cfg := func() *config.Config {
 				return &config.Config{Admin: config.AdminConfig{
 					ApprovedNumbers: []string{approved},
+					DeniedNumbers:   tc.deniedNumbers,
 					ApprovedGroups:  tc.approved,
 					DeniedGroups:    tc.denied,
 				}}
@@ -666,7 +675,7 @@ func TestReceiveGroupAuthorization(t *testing.T) {
 			})
 
 			raw, err := json.Marshal(model.Inbound{
-				Sender:     approved,
+				Sender:     tc.sender,
 				Text:       "@Aether !test",
 				Provider:   "signal",
 				GroupID:    groupID,
@@ -694,7 +703,7 @@ func TestReceiveGroupAuthorization(t *testing.T) {
 			if tc.wantGroup == 1 {
 				got := groups[0]
 				if got.GroupID != groupID || got.Name != "Test Group" ||
-					got.Sender != approved || got.SenderName != "" {
+					got.Sender != tc.sender || got.SenderName != "" {
 					t.Errorf("unknown group = %+v, want group id, name, and sender", got)
 				}
 			}

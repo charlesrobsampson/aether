@@ -136,7 +136,7 @@ func (m *Manager) HandleRemind(t sdk.Transmission) error {
 		// The reaction acknowledges every reminder; an absolute time also gets
 		// one short normalized line so the user can verify the instant.
 		if err := m.send(t, fmt.Sprintf("Reminder set for %s: %s",
-			m.formatReminderTime(reminder.at, t.Sender), reminder.text)); err != nil && m.onError != nil {
+			m.formatReminderTime(reminder.at, t.Actor()), reminder.text)); err != nil && m.onError != nil {
 			m.onError(err)
 		}
 	} else {
@@ -180,7 +180,7 @@ func (m *Manager) parseArgs(t sdk.Transmission) (reminder, bool, error) {
 	msg := strings.TrimSpace(argString(t.Args, "msg"))
 
 	if raw, present := t.Args["at"]; present && raw != nil {
-		at, err := m.absoluteTime(raw, t.Sender)
+		at, err := m.absoluteTime(raw, t.Actor())
 		if err != nil {
 			return reminder{}, true, err
 		}
@@ -221,10 +221,10 @@ func (m *Manager) parseText(t sdk.Transmission) (reminder, error) {
 	}
 
 	if index := strings.LastIndex(text, " at "); index >= 0 {
-		return m.absoluteReminder(strings.TrimSpace(text[:index]), strings.TrimSpace(text[index+len(" at "):]), t.Sender)
+		return m.absoluteReminder(strings.TrimSpace(text[:index]), strings.TrimSpace(text[index+len(" at "):]), t.Actor())
 	}
 	if rest, ok := strings.CutPrefix(text, "at "); ok {
-		return m.absoluteReminder("", strings.TrimSpace(rest), t.Sender)
+		return m.absoluteReminder("", strings.TrimSpace(rest), t.Actor())
 	}
 
 	return reminder{}, sdk.Userf(`I couldn't find a schedule in that. Try "remind me <text> in 10 minutes" or "remind me <text> at 2026-11-08 09:00".`)

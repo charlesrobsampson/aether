@@ -163,11 +163,14 @@ func parseCommandArgs(args map[string]any) (command, error) {
 }
 
 func (m *Manager) handleRead(t sdk.Transmission, cmd command) error {
-	cfg, sender, role, err := m.authorize(t)
+	cfg, actor, _, role, err := m.authorize(t)
 	if err != nil {
 		return err
 	}
-	target, err := resolveReadTarget(sender, role, cmd.phone)
+	if groupAdminAttempt(t.GroupID, actor, cmd.phone, cmd.target) {
+		return sdk.ErrIgnored
+	}
+	target, err := resolveReadTarget(actor, role, cmd.phone)
 	if err != nil {
 		return err
 	}
@@ -176,11 +179,11 @@ func (m *Manager) handleRead(t sdk.Transmission, cmd command) error {
 	var text string
 	switch cmd.action {
 	case "list":
-		text = renderList(settings, cfg, sender, target)
+		text = renderList(settings, cfg, actor, target)
 	case "export":
-		text = renderExport(settings, cfg, sender, target)
+		text = renderExport(settings, cfg, actor, target)
 	case "get":
-		text, err = renderGet(settings, cfg, sender, target, cmd.target)
+		text, err = renderGet(settings, cfg, actor, target, cmd.target)
 		if err != nil {
 			return err
 		}
