@@ -115,6 +115,12 @@ func handle(w http.ResponseWriter, r *http.Request) {
 (or `200` when unset). Aether converts the envelope to an outbound job; it
 applies authentication, muting, rate limiting, and delivery.
 
+`Recipients` and `GroupChatID` are optional. When both are empty, Aether replies
+to the conversation that triggered the dispatch: the group for a group message,
+otherwise the sender. `Satellite` and `ThreadID` likewise default to the route
+and thread from the dispatch envelope, so a minimal `{"text": "..."}` response
+is enough for a one-line answer.
+
 Pass `Format: "styled"` to opt into provider-native formatting. Aether currently
 forwards it to Signal, which renders `*bold*`, `_italic_`, `~strikethrough~`,
 `||spoiler||`, and `` `monospace` ``. An empty format (or `"plain"`) sends
