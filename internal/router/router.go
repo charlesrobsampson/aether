@@ -12,6 +12,7 @@ import (
 	"github.com/charlesrobsampson/aether/internal/model"
 	"github.com/charlesrobsampson/aether/internal/session"
 	"github.com/charlesrobsampson/aether/internal/store"
+	"github.com/charlesrobsampson/aether/pkg/sdk"
 )
 
 // defaultClientTimeout bounds one dispatch POST the way plan §3.13/§3.6
@@ -62,6 +63,13 @@ type Replier func(ctx context.Context, in model.Inbound, text string) error
 // not support reactions return transport.ErrReactionsUnsupported.
 type Reactor func(ctx context.Context, in model.Inbound, emoji string) error
 
+// Sender delivers a satellite response envelope. It is the same outbound seam
+// the /message handler uses, so a satellite can answer its dispatch with a
+// response body instead of a second HTTP call (plan §3.6, §3.11).
+type Sender interface {
+	Send(ctx context.Context, resp sdk.Response) error
+}
+
 // Options configures a Router. Every field is optional so New() remains usable
 // as an inert value in scaffold tests.
 type Options struct {
@@ -84,6 +92,8 @@ type Options struct {
 	Reply Replier
 	// React attaches success reactions. Nil disables reactions.
 	React Reactor
+	// Out delivers a satellite response envelope. Nil drops response bodies.
+	Out Sender
 	// Metrics receives dispatch latency and failure counters. Nil selects the
 	// process-wide default registry.
 	Metrics *metrics.Registry
@@ -98,6 +108,7 @@ type Router struct {
 	builtins []Builtin
 	reply    Replier
 	react    Reactor
+	out      Sender
 	metrics  *metrics.Registry
 }
 
@@ -119,6 +130,7 @@ func New(options ...Options) *Router {
 	r.builtins = option.Builtins
 	r.reply = option.Reply
 	r.react = option.React
+	r.out = option.Out
 	if option.Client != nil {
 		r.client = option.Client
 	}

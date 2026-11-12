@@ -224,6 +224,7 @@ func Run(ctx context.Context, opts Options) error {
 		Builtins: builtins(configManager, adminManager, testManager, helpManager),
 		Reply:    sender.Reply,
 		React:    sender.React,
+		Out:      sender,
 	})
 
 	// Inbound dispatch is asynchronous: /receive enqueues and returns 202, and

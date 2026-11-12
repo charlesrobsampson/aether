@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"sort"
@@ -339,7 +340,8 @@ func (r *Router) dispatchRoute(ctx context.Context, in model.Inbound, route conf
 			MentionsMe:  in.MentionsMe,
 			TimestampMS: in.TimestampMS,
 		}
-		if err := r.post(ctx, route.Endpoint, command.Path, envelope); err != nil {
+		response, err := r.post(ctx, route.Endpoint, command.Path, envelope)
+		if err != nil {
 			r.observeFailure(dispatchFailureReason(err))
 			r.record(ctx, store.RouteLog{
 				Direction: "inbound",
@@ -353,6 +355,7 @@ func (r *Router) dispatchRoute(ctx context.Context, in model.Inbound, route conf
 			})
 			return true
 		}
+		r.relayResponse(ctx, in, route, threadID, response)
 
 		r.record(ctx, store.RouteLog{
 			Direction: "inbound",
@@ -798,8 +801,9 @@ func userLocation(timezone string) (*time.Location, error) {
 
 // post sends the dispatch envelope to endpoint+path. Any non-2xx response or
 // transport error is returned for the audit row; the caller never replies to
-// the sender.
-func (r *Router) post(ctx context.Context, endpoint, path string, envelope transmission) error {
+// the sender. A JSON response body is decoded as a satellite response envelope
+// so the satellite can answer through Aether's outbound queue.
+func (r *Router) post(ctx context.Context, endpoint, path string, envelope transmission) (*sdk.Response, error) {
 	url := strings.TrimRight(endpoint, "/")
 	if path == "" {
 		path = "/"
@@ -810,12 +814,12 @@ func (r *Router) post(ctx context.Context, endpoint, path string, envelope trans
 
 	raw, err := json.Marshal(envelope)
 	if err != nil {
-		return fmt.Errorf("router: marshal payload: %w", err)
+		return nil, fmt.Errorf("router: marshal payload: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
-		return fmt.Errorf("router: build POST %s: %w", url, err)
+		return nil, fmt.Errorf("router: build POST %s: %w", url, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -825,13 +829,84 @@ func (r *Router) post(ctx context.Context, endpoint, path string, envelope trans
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("router: POST %s: %w", url, err)
+		return nil, fmt.Errorf("router: POST %s: %w", url, err)
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
 
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("router: POST %s: status %d", url, resp.StatusCode)
+		return nil, fmt.Errorf("router: POST %s: status %d", url, resp.StatusCode)
 	}
-	return nil
+	return decodeResponse(resp.Header.Get("Content-Type"), body), nil
+}
+
+// maxResponseBody bounds a satellite response envelope. It is larger than a
+// dispatch envelope because a prediction reply can contain several lines.
+const maxResponseBody = 64 << 10
+
+// decodeResponse parses a satellite response body. A missing, non-JSON, or
+// malformed body is not an error: older satellites answer with a bare 2xx and
+// have no reply to relay.
+func decodeResponse(contentType string, body []byte) *sdk.Response {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil
+	}
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil || mediaType != "application/json" {
+		return nil
+	}
+
+	var response sdk.Response
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil
+	}
+	return &response
+}
+
+// relayResponse delivers a satellite response envelope to the conversation it
+// answers. An empty target defaults to the inbound group (or sender), and an
+// empty satellite/thread inherits the route values. A response with neither
+// text nor a session action is a no-op.
+func (r *Router) relayResponse(ctx context.Context, in model.Inbound, route config.RouteEntry, threadID string, response *sdk.Response) {
+	if r == nil || r.out == nil || response == nil {
+		return
+	}
+
+	if strings.TrimSpace(response.Satellite) == "" {
+		response.Satellite = route.Satellite
+	}
+	if strings.TrimSpace(response.ThreadID) == "" {
+		response.ThreadID = threadID
+	}
+
+	if response.Session != nil {
+		action := model.SessionAction{
+			Action:     response.Session.Action,
+			TTLSeconds: response.Session.TTLSeconds,
+		}
+		targets := response.Recipients
+		if len(targets) == 0 && strings.TrimSpace(response.GroupChatID) == "" {
+			targets = []string{in.Sender}
+		}
+		for _, target := range targets {
+			if err := r.ApplySessionAction(target, response.Satellite, response.ThreadID, action); err != nil {
+				log.Printf("router: session action for %s failed: %v", target, err)
+			}
+		}
+	}
+
+	if len(response.Recipients) == 0 && strings.TrimSpace(response.GroupChatID) == "" {
+		if group := strings.TrimSpace(in.GroupID); group != "" {
+			response.GroupChatID = group
+		} else if sender := strings.TrimSpace(in.Sender); sender != "" {
+			response.Recipients = []string{sender}
+		}
+	}
+
+	if strings.TrimSpace(response.Text) == "" {
+		return
+	}
+	if err := r.out.Send(ctx, *response); err != nil {
+		log.Printf("router: relay satellite response for %s failed: %v", in.Sender, err)
+	}
 }

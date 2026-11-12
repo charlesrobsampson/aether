@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"github.com/charlesrobsampson/aether/internal/model"
 	"github.com/charlesrobsampson/aether/internal/store"
 	"github.com/charlesrobsampson/aether/internal/testutil"
+	"github.com/charlesrobsampson/aether/pkg/sdk"
 )
 
 // dispatchEnvelope mirrors the payload in plan §3.6. Args stay raw so each case
@@ -462,6 +464,142 @@ func TestEnvelopeAndRouteLogCarryMessageID(t *testing.T) {
 	}
 	if loggedID != messageID {
 		t.Fatalf("route_log.message_id = %q, want %q", loggedID, messageID)
+	}
+}
+
+// TestDispatchRelaysSatelliteResponse proves a satellite can answer its
+// dispatch with a response envelope and Aether delivers it to the originating
+// conversation (plan §3.6, §3.11).
+func TestDispatchRelaysSatelliteResponse(t *testing.T) {
+	const sender = "+15555550102"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"text":"fps: 14 mph, flyable"}`)
+	}))
+	t.Cleanup(server.Close)
+
+	root := testutil.TempConfig(t)
+	cfg, err := config.LoadConfig(root)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	testutil.WriteJSON(t, filepath.Join(root, "routes.json"), routesForTest(cfg, server.URL))
+	cfg, err = config.LoadConfig(root)
+	if err != nil {
+		t.Fatalf("LoadConfig after routes: %v", err)
+	}
+
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("store.Close: %v", err)
+		}
+	})
+
+	out := &recordingSender{}
+	rt := New(Options{
+		Config: func() *config.Config { return cfg },
+		Store:  st,
+		Client: server.Client(),
+		Out:    out,
+	})
+	rt.Dispatch(context.Background(), model.Inbound{
+		Sender:   sender,
+		Text:     "!fly FPS",
+		Provider: "signal",
+	})
+
+	if len(out.responses) != 1 {
+		t.Fatalf("outbound responses = %d, want 1", len(out.responses))
+	}
+	got := out.responses[0]
+	if len(got.Recipients) != 1 || got.Recipients[0] != sender {
+		t.Errorf("recipients = %v, want [%s]", got.Recipients, sender)
+	}
+	if got.Text != "fps: 14 mph, flyable" {
+		t.Errorf("text = %q, want the satellite reply", got.Text)
+	}
+	if got.Satellite != "wind-predictor" {
+		t.Errorf("satellite = %q, want wind-predictor", got.Satellite)
+	}
+}
+
+// recordingSender captures relayed satellite responses.
+type recordingSender struct {
+	responses []sdk.Response
+}
+
+func (s *recordingSender) Send(_ context.Context, resp sdk.Response) error {
+	s.responses = append(s.responses, resp)
+	return nil
+}
+
+// TestDispatchRelaysGroupResponse proves a group dispatch answers in the group
+// when the satellite does not name a target.
+func TestDispatchRelaysGroupResponse(t *testing.T) {
+	const (
+		sender  = "+15555550102"
+		groupID = "group.example-id"
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"text":"group forecast"}`)
+	}))
+	t.Cleanup(server.Close)
+
+	root := testutil.TempConfig(t)
+	cfg, err := config.LoadConfig(root)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	testutil.WriteJSON(t, filepath.Join(root, "routes.json"), routesForTest(cfg, server.URL))
+	cfg, err = config.LoadConfig(root)
+	if err != nil {
+		t.Fatalf("LoadConfig after routes: %v", err)
+	}
+
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("store.Close: %v", err)
+		}
+	})
+
+	out := &recordingSender{}
+	rt := New(Options{
+		Config: func() *config.Config { return cfg },
+		Store:  st,
+		Client: server.Client(),
+		Out:    out,
+	})
+	rt.Dispatch(context.Background(), model.Inbound{
+		Sender:     sender,
+		Text:       "!fly FPS",
+		Provider:   "signal",
+		GroupID:    groupID,
+		MentionsMe: true,
+	})
+
+	if len(out.responses) != 1 {
+		t.Fatalf("outbound responses = %d, want 1", len(out.responses))
+	}
+	got := out.responses[0]
+	if got.GroupChatID != groupID {
+		t.Errorf("group_chat_id = %q, want %q", got.GroupChatID, groupID)
+	}
+	if len(got.Recipients) != 0 {
+		t.Errorf("recipients = %v, want none for a group reply", got.Recipients)
+	}
+	if got.Text != "group forecast" {
+		t.Errorf("text = %q, want the satellite reply", got.Text)
 	}
 }
 
