@@ -215,3 +215,60 @@ func TestHelpGroupCapsAdminRole(t *testing.T) {
 		t.Fatalf("group help lacks user commands:\n%s", got)
 	}
 }
+
+func addGlideSatellite(manager *Manager) {
+	cfg := manager.configSnapshot()
+	cfg.Satellites["glider"] = config.SatelliteConfig{
+		Name:        "weather",
+		Trigger:     "glide",
+		Description: "Glider status",
+		Commands: []config.CommandConfig{{
+			Name:     "glide",
+			Patterns: []string{"glide <site>"},
+		}},
+	}
+}
+
+func TestHelpGroupsCommandsBySatellite(t *testing.T) {
+	manager, sender := testManager(t, auth.User)
+	addGlideSatellite(manager)
+
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help"}); err != nil {
+		t.Fatalf("HandleHelp: %v", err)
+	}
+	got := sender.last(t)
+
+	aether := strings.Index(got, "*Aether*")
+	weather := strings.Index(got, "*weather*")
+	if aether < 0 || weather < 0 {
+		t.Fatalf("help lacks group headings:\n%s", got)
+	}
+	if aether > weather {
+		t.Fatalf("Aether group should come first:\n%s", got)
+	}
+	if !strings.Contains(got[:weather], "!help") {
+		t.Fatalf("built-in help is not under Aether:\n%s", got)
+	}
+	underWeather := got[weather:]
+	if !strings.Contains(underWeather, "!fly <station>") {
+		t.Fatalf("fly is not under weather:\n%s", got)
+	}
+	if !strings.Contains(underWeather, "!glide <site>") {
+		t.Fatalf("glide is not under weather:\n%s", got)
+	}
+}
+
+func TestHelpSatelliteGroupDetail(t *testing.T) {
+	manager, sender := testManager(t, auth.User)
+	addGlideSatellite(manager)
+
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help weather"}); err != nil {
+		t.Fatalf("HandleHelp: %v", err)
+	}
+	got := sender.last(t)
+	for _, want := range []string{"*weather*", "!fly <station>", "!glide <site>"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("group detail lacks %q:\n%s", want, got)
+		}
+	}
+}

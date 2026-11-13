@@ -1032,3 +1032,23 @@ func TestConfigGroupPrincipal(t *testing.T) {
 		}
 	}
 }
+
+func TestSplitSatelliteTargetResolvesNameAndCase(t *testing.T) {
+	cfg := &config.Config{Satellites: map[string]config.SatelliteConfig{
+		"wp": {Name: "wind-predictor"},
+	}}
+
+	name, key, ok := splitSatelliteTarget(cfg, "wind-predictor.alert_schedule.nightly_local")
+	if !ok || name != "wp" || key != "alert_schedule.nightly_local" {
+		t.Fatalf("splitSatelliteTarget by name = %q, %q, %v", name, key, ok)
+	}
+
+	name, key, ok = splitSatelliteTarget(cfg, "Wind-Predictor.muted")
+	if !ok || name != "wp" || key != "muted" {
+		t.Fatalf("splitSatelliteTarget case-insensitive = %q, %q, %v", name, key, ok)
+	}
+
+	if _, _, ok := splitSatelliteTarget(cfg, "unknown.key"); ok {
+		t.Fatal("unknown satellite matched")
+	}
+}

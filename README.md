@@ -73,6 +73,21 @@ The same works with `!config set prefixes ""`. This overrides the system
 persona prefixes for that user; commands are then typed bare, for example
 `config list`.
 
+Unprefixed `!config` always means Aether's own settings. Satellite-owned
+settings use the satellite name as a prefix:
+
+```
+!wind-predictor config set alert_schedule.nightly_local 21:45
+```
+
+Satellite triggers accept the same prefix, for example
+`!wind-predictor fly FPS` or `!wind-predictor glider status`. The prefix is
+optional when the trigger is unique; if two satellites share a trigger, Aether
+replies with the prefixed forms to use. `!help` lists every command under its
+satellite, and `!help wind-predictor` lists one satellite. Satellite config
+forwarding is admin-only and must originate in a private chat; groups ignore it
+silently.
+
 Command names, subcommands, satellite triggers, aliases, and prefixes are
 case-insensitive, so a phone that autocapitalizes the first word still works
 (`!Approve 2`, `Config List`, `Fly FPS`). Arguments and message text keep their

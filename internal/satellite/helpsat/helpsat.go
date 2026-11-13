@@ -35,10 +35,16 @@ type Sender interface {
 type Entry struct {
 	// Name is the satellite or built-in name used for alias resolution.
 	Name string
+	// Group is the satellite heading this entry is listed under. Built-ins
+	// use "Aether"; satellite entries use the satellite's canonical name.
+	Group string
 	// Trigger is the canonical first token.
 	Trigger string
 	// Usage is the one-line usage shown in detail view.
 	Usage string
+	// Patterns are the satellite command patterns. When present they replace
+	// Usage in the list so every command is shown under its satellite.
+	Patterns []string
 	// Description is the short summary shown in the list.
 	Description string
 	// Role is the minimum role that may see the command.
@@ -97,7 +103,11 @@ func (m *Manager) HandleHelp(t sdk.Transmission) error {
 	if topic == "" {
 		return m.send(t, renderList(entries, prefix))
 	}
-	entry, ok := findEntry(entries, resolveAlias(cfg, actor, topic))
+	topic = resolveAlias(cfg, actor, topic)
+	if group := groupForTopic(entries, topic); group != "" {
+		return m.send(t, renderGroup(entries, group, prefix))
+	}
+	entry, ok := findEntry(entries, topic)
 	if !ok {
 		hint := fmt.Sprintf("No command %q. Send %q for the list.", topic, prefix+"help")
 		if suggestion := closestEntry(entries, topic); suggestion != "" {
@@ -116,20 +126,26 @@ func (m *Manager) configSnapshot() *config.Config {
 	return m.config()
 }
 
-// entries returns the visible built-ins plus configured satellites, sorted by
-// trigger. Aliases are not separate entries; help resolves them.
+// entries returns the visible built-ins plus configured satellites, grouped by
+// satellite and sorted by trigger. Aliases are not separate entries; help
+// resolves them.
 func (m *Manager) entries(cfg *config.Config, sender string, role auth.Role) []Entry {
 	if m == nil {
 		return nil
 	}
 
-	out := make([]Entry, 0, len(m.commands)+len(cfg.Satellites))
-	seen := make(map[string]bool)
+	capacity := len(m.commands)
+	if cfg != nil {
+		capacity += len(cfg.Satellites)
+	}
+	out := make([]Entry, 0, capacity)
 	for _, entry := range m.commands {
 		if entry.Trigger == "" || entry.Role > role {
 			continue
 		}
-		seen[entry.Trigger] = true
+		if entry.Group == "" {
+			entry.Group = "Aether"
+		}
 		out = append(out, entry)
 	}
 
@@ -142,12 +158,12 @@ func (m *Manager) entries(cfg *config.Config, sender string, role auth.Role) []E
 		for _, name := range names {
 			satellite := cfg.Satellites[name]
 			trigger := strings.TrimSpace(satellite.Trigger)
-			if trigger == "" || seen[trigger] {
+			if trigger == "" {
 				continue
 			}
-			seen[trigger] = true
 			entry := Entry{
 				Name:        satellite.Name,
+				Group:       satellite.Name,
 				Trigger:     trigger,
 				Usage:       trigger,
 				Description: strings.TrimSpace(satellite.Description),
@@ -155,12 +171,17 @@ func (m *Manager) entries(cfg *config.Config, sender string, role auth.Role) []E
 			if entry.Name == "" {
 				entry.Name = name
 			}
+			if entry.Group == "" {
+				entry.Group = entry.Name
+			}
 			if entry.Description == "" {
 				entry.Description = "Satellite command"
 			}
 			for _, command := range satellite.Commands {
 				for _, pattern := range command.Patterns {
-					entry.Details = append(entry.Details, strings.TrimSpace(pattern))
+					if pattern = strings.TrimSpace(pattern); pattern != "" {
+						entry.Patterns = append(entry.Patterns, pattern)
+					}
 				}
 			}
 			out = append(out, entry)
@@ -176,9 +197,27 @@ func (m *Manager) entries(cfg *config.Config, sender string, role auth.Role) []E
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {
-		return out[i].Trigger < out[j].Trigger
+		ri, rj := groupRank(out[i].Group), groupRank(out[j].Group)
+		if ri != rj {
+			return ri < rj
+		}
+		if out[i].Group != out[j].Group {
+			return out[i].Group < out[j].Group
+		}
+		if out[i].Trigger != out[j].Trigger {
+			return out[i].Trigger < out[j].Trigger
+		}
+		return out[i].Usage < out[j].Usage
 	})
 	return out
+}
+
+// groupRank puts Aether's built-ins first, then satellites alphabetically.
+func groupRank(group string) int {
+	if strings.EqualFold(group, "Aether") {
+		return 0
+	}
+	return 1
 }
 
 func aliasesFor(cfg *config.Config, sender, trigger, name string) []string {
@@ -270,29 +309,94 @@ func helpTopic(t sdk.Transmission) string {
 	return strings.TrimSpace(strings.Join(fields, " "))
 }
 
-// renderList is the compact default view: one line per visible command.
+// renderList is the compact default view: every command under its satellite.
 func renderList(entries []Entry, prefix string) string {
 	if len(entries) == 0 {
 		return "No commands are available."
 	}
 	var b strings.Builder
 	b.WriteString("*Available commands*\n")
-	for _, entry := range entries {
-		fmt.Fprintf(&b, "  *%s%s*", prefix, entry.Usage)
-		if entry.Description != "" {
-			fmt.Fprintf(&b, " — %s", entry.Description)
+	for _, group := range groups(entries) {
+		fmt.Fprintf(&b, "*%s*\n", group)
+		for _, entry := range entries {
+			if entry.Group != group {
+				continue
+			}
+			writeEntry(&b, entry, prefix)
 		}
-		b.WriteString("\n")
 	}
 	fmt.Fprintf(&b, "Send *%s* for details.", prefix+"help <command>")
 	return truncate(b.String())
+}
+
+// renderGroup lists every command that belongs to one satellite.
+func renderGroup(entries []Entry, group, prefix string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "*%s*\n", group)
+	for _, entry := range entries {
+		if entry.Group == group {
+			writeEntry(&b, entry, prefix)
+		}
+	}
+	fmt.Fprintf(&b, "Send *%s* for details.", prefix+"help <command>")
+	return truncate(b.String())
+}
+
+// writeEntry prints one command. Satellite entries print each configured
+// pattern so a satellite that owns several commands is fully represented.
+func writeEntry(b *strings.Builder, entry Entry, prefix string) {
+	if len(entry.Patterns) > 0 {
+		for _, pattern := range entry.Patterns {
+			fmt.Fprintf(b, "  *%s%s*\n", prefix, pattern)
+		}
+		return
+	}
+	fmt.Fprintf(b, "  *%s%s*", prefix, entry.Usage)
+	if entry.Description != "" {
+		fmt.Fprintf(b, " — %s", entry.Description)
+	}
+	b.WriteString("\n")
+}
+
+// groups returns the display groups in sorted entry order.
+func groups(entries []Entry) []string {
+	seen := make(map[string]bool)
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Group == "" || seen[entry.Group] {
+			continue
+		}
+		seen[entry.Group] = true
+		out = append(out, entry.Group)
+	}
+	return out
+}
+
+// groupForTopic resolves "help <satellite>" to the group heading.
+func groupForTopic(entries []Entry, topic string) string {
+	topic = strings.TrimSpace(topic)
+	if topic == "" {
+		return ""
+	}
+	for _, entry := range entries {
+		if entry.Group != "" && strings.EqualFold(entry.Group, topic) {
+			return entry.Group
+		}
+	}
+	return ""
 }
 
 // renderDetail expands one command, including usage, description, and any
 // satellite patterns or aliases.
 func renderDetail(entry Entry, prefix string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "*%s%s*\n", prefix, entry.Usage)
+	if len(entry.Patterns) > 0 {
+		for _, pattern := range entry.Patterns {
+			fmt.Fprintf(&b, "*%s%s*\n", prefix, pattern)
+		}
+	} else {
+		fmt.Fprintf(&b, "*%s%s*\n", prefix, entry.Usage)
+	}
 	if entry.Description != "" {
 		b.WriteString(entry.Description)
 		b.WriteString("\n")

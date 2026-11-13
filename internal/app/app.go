@@ -504,7 +504,11 @@ func helpCommands() []helpsat.Entry {
 			Usage:       "help [command]",
 			Description: "List available commands",
 			Role:        auth.User,
-			Details:     []string{`Send "help <command>" to expand one command.`},
+			Details: []string{
+				`Send "help <command>" to expand one command.`,
+				`Send "help <satellite>" to list one satellite's commands.`,
+				"Commands are grouped by satellite. Prefix a shared trigger with its satellite name.",
+			},
 		},
 		{
 			Name:        "test",
@@ -541,6 +545,9 @@ func helpCommands() []helpsat.Entry {
 				"Keys: timezone, prefixes, muted, aliases.",
 				`Use "config set prefixes []" for no command prefix.`,
 				"Admins can target another user with @<phone>.",
+				"Satellite settings: <satellite> config set <key> <value>.",
+				`Example: "wind-predictor config set alert_schedule.nightly_local 21:45".`,
+				"Satellite commands can also be prefixed, for example \"wind-predictor fly FPS\".",
 			},
 		},
 		{

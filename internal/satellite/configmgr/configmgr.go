@@ -354,10 +354,37 @@ func splitSatelliteTarget(cfg *config.Config, target string) (name, key string, 
 		return "", "", false
 	}
 	name = target[:dot]
-	if _, exists := cfg.Satellites[name]; !exists {
+	key, ok = findSatelliteKey(cfg, name)
+	if !ok {
 		return "", "", false
 	}
-	return name, target[dot+1:], true
+	return key, target[dot+1:], true
+}
+
+// findSatelliteKey resolves a file key or canonical satellite name to the file
+// key. Config forwarding needs the key because that is how cfg.Satellites and
+// the sender's satellite_ids mapping are indexed.
+func findSatelliteKey(cfg *config.Config, name string) (string, bool) {
+	if cfg == nil {
+		return "", false
+	}
+	if _, ok := cfg.Satellites[name]; ok {
+		return name, true
+	}
+
+	var nameMatch string
+	for key, satellite := range cfg.Satellites {
+		if strings.EqualFold(key, name) {
+			return key, true
+		}
+		if nameMatch == "" && strings.EqualFold(strings.TrimSpace(satellite.Name), name) {
+			nameMatch = key
+		}
+	}
+	if nameMatch != "" {
+		return nameMatch, true
+	}
+	return "", false
 }
 
 // applyLocal patches one user or group settings file and records the audit row.

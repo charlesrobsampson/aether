@@ -178,6 +178,19 @@ using this mapping. The role check always happens in Aether; schema validation
 belongs to the satellite. `satellite_ids` is admin-managed and is not part of the
 user `!config set` whitelist.
 
+Users can address the satellite directly by prefixing `config` with its name:
+
+```
+!wind-predictor config set alert_schedule.nightly_local 21:45
+```
+
+This is equivalent to `!config set wind-predictor.alert_schedule.nightly_local
+21:45`. The unprefixed `!config` remains Aether-level, so a satellite config
+change always needs the prefix. Satellite triggers accept the same prefix
+(`!wind-predictor fly FPS`); it is optional when the trigger is unique. Config
+forwarding is admin-only and must originate in a private chat; groups ignore it
+silently.
+
 ## 7. Test it
 
 Use `httptest` for the satellite and `internal/testutil` fakes in Aether. A

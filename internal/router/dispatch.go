@@ -119,10 +119,34 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 		return
 	}
 
+	// An explicit "<satellite> <command>" prefix selects one satellite. The
+	// prefix is optional when the command is unambiguous; see triggerRoutes
+	// below for the conflict check.
+	if scope, rest, ok := resolveSatelliteScope(cfg, user, text); ok {
+		if r.dispatchScoped(ctx, cfg, in, user, scope, rest, prefixed, prefix) {
+			return
+		}
+	}
+
 	// Built-ins are internal handlers and take precedence over file
 	// satellites with the same trigger (plan §3.6).
 	if builtin, ok := r.resolveBuiltin(text); ok {
 		r.dispatchBuiltin(ctx, in, builtin, text)
+		return
+	}
+
+	// A trigger shared by two satellites is only usable with an explicit
+	// satellite prefix, for example "wind-predictor fly FPS".
+	if matches := triggerRoutes(cfg, user, text); len(matches) > 1 {
+		r.record(ctx, store.RouteLog{
+			Direction: "inbound",
+			MessageID: in.MessageID,
+			Sender:    in.Sender,
+			Text:      text,
+			Status:    "dropped",
+			Error:     "ambiguous trigger",
+		})
+		r.replyUser(ctx, in, ambiguousCommandReply(prefix, matches))
 		return
 	}
 
@@ -147,6 +171,12 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 		return
 	}
 
+	r.dispatchResolvedRoute(ctx, in, route, user, canonical, prefixed, prefix)
+}
+
+// dispatchResolvedRoute posts a resolved route and records the outcome. It
+// keeps the scoped and unscoped paths identical after trigger resolution.
+func (r *Router) dispatchResolvedRoute(ctx context.Context, in model.Inbound, route config.RouteEntry, user config.UserConfig, canonical string, prefixed bool, prefix string) {
 	loc, err := userLocation(user.Timezone)
 	if err != nil {
 		r.observeFailure(metrics.DispatchReasonParse)
@@ -199,6 +229,229 @@ func (r *Router) resolveBuiltin(text string) (Builtin, bool) {
 		}
 	}
 	return Builtin{}, false
+}
+
+// satelliteScope is an explicit "<satellite> <command>" prefix. key is the
+// satellite file key used for config forwarding; name is the canonical
+// satellite name shared by every file that belongs to the same satellite.
+type satelliteScope struct {
+	key  string
+	name string
+}
+
+// resolveSatelliteScope recognizes a leading satellite name or satellite alias.
+// It deliberately returns the remainder without validating it: dispatchScoped
+// decides whether the remainder names a command that belongs to the satellite,
+// and otherwise lets the legacy alias path handle forms such as "wind FPS".
+func resolveSatelliteScope(cfg *config.Config, user config.UserConfig, text string) (satelliteScope, string, bool) {
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return satelliteScope{}, "", false
+	}
+
+	target := fields[0]
+	if alias := lookupFold(user.Aliases.Satellites, target); alias != "" {
+		target = alias
+	}
+	key, satellite, ok := lookupSatellite(cfg, target)
+	if !ok {
+		return satelliteScope{}, "", false
+	}
+	name := strings.TrimSpace(satellite.Name)
+	if name == "" {
+		name = key
+	}
+	return satelliteScope{key: key, name: name}, strings.Join(fields[1:], " "), true
+}
+
+// lookupSatellite resolves a satellite by canonical name first and file key
+// second. Several files may share a name (for example one satellite that owns
+// the fly, glider, and loaded triggers); an exact file-key match is preferred
+// so config forwarding uses the file that carries the endpoint and mapping.
+func lookupSatellite(cfg *config.Config, token string) (string, config.SatelliteConfig, bool) {
+	if cfg == nil || strings.TrimSpace(token) == "" {
+		return "", config.SatelliteConfig{}, false
+	}
+
+	keys := make([]string, 0, len(cfg.Satellites))
+	for key := range cfg.Satellites {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	var nameMatch string
+	for _, key := range keys {
+		satellite := cfg.Satellites[key]
+		if !strings.EqualFold(strings.TrimSpace(satellite.Name), token) {
+			continue
+		}
+		if strings.EqualFold(key, token) {
+			return key, satellite, true
+		}
+		if nameMatch == "" {
+			nameMatch = key
+		}
+	}
+	if nameMatch != "" {
+		return nameMatch, cfg.Satellites[nameMatch], true
+	}
+
+	for _, key := range keys {
+		if strings.EqualFold(key, token) {
+			return key, cfg.Satellites[key], true
+		}
+	}
+	return "", config.SatelliteConfig{}, false
+}
+
+// dispatchScoped handles an explicit satellite prefix. It reports whether the
+// prefix was consumed. A false return lets the normal alias path run, which
+// preserves the older "wind FPS" shorthand for a single-command satellite.
+func (r *Router) dispatchScoped(ctx context.Context, cfg *config.Config, in model.Inbound, user config.UserConfig, scope satelliteScope, rest string, prefixed bool, prefix string) bool {
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return false
+	}
+
+	switch {
+	case strings.EqualFold(fields[0], "config"):
+		text, ok := scopedConfigText(scope, fields[1:])
+		if !ok {
+			r.record(ctx, store.RouteLog{
+				Direction: "inbound",
+				MessageID: in.MessageID,
+				Sender:    in.Sender,
+				Satellite: "config",
+				Text:      strings.TrimSpace(scope.name + " " + rest),
+				Status:    "dropped",
+				Error:     "unsupported scoped config",
+			})
+			r.replyUser(ctx, in, fmt.Sprintf(
+				`Use %q to change a %s setting.`,
+				prefix+scope.name+" config set <key> <value>", scope.name))
+			return true
+		}
+		if builtin, ok := r.resolveBuiltin("config"); ok {
+			r.dispatchBuiltin(ctx, in, builtin, text)
+			return true
+		}
+		return false
+
+	case strings.EqualFold(fields[0], "help"):
+		topic := strings.TrimSpace(strings.Join(fields[1:], " "))
+		if topic == "" {
+			topic = scope.name
+		}
+		if builtin, ok := r.resolveBuiltin("help"); ok {
+			r.dispatchBuiltin(ctx, in, builtin, "help "+topic)
+			return true
+		}
+		return false
+	}
+
+	lookup := fields[0]
+	if target := lookupFold(user.Aliases.Commands, lookup); target != "" {
+		lookup = target
+	}
+	for _, route := range routesForScope(cfg, scope) {
+		if !strings.EqualFold(route.Trigger, lookup) {
+			continue
+		}
+		canonical := route.Trigger
+		if len(fields) > 1 {
+			canonical += " " + strings.Join(fields[1:], " ")
+		}
+		r.dispatchResolvedRoute(ctx, in, route, user, canonical, prefixed, prefix)
+		return true
+	}
+	return false
+}
+
+// scopedConfigText rewrites "wind-predictor config set <key> <value>" into the
+// canonical config-manager form "config set wind-predictor.<key> <value>". The
+// scoped form only changes satellite-owned settings; reads stay Aether-level.
+func scopedConfigText(scope satelliteScope, fields []string) (string, bool) {
+	if len(fields) == 0 || !strings.EqualFold(fields[0], "set") {
+		return "", false
+	}
+
+	rest := fields[1:]
+	phone := ""
+	if len(rest) > 0 && strings.HasPrefix(rest[0], "@") {
+		phone = strings.TrimSpace(strings.TrimPrefix(rest[0], "@"))
+		rest = rest[1:]
+	}
+	if len(rest) < 2 {
+		// Let the config manager produce its standard usage error.
+		return "config set", true
+	}
+
+	target := scope.key + "." + rest[0]
+	value := strings.Join(rest[1:], " ")
+	if phone != "" {
+		return fmt.Sprintf("config set @%s %s %s", phone, target, value), true
+	}
+	return fmt.Sprintf("config set %s %s", target, value), true
+}
+
+// routesForScope returns every route that belongs to one canonical satellite
+// name, so a satellite split across several files is still addressable by one
+// prefix.
+func routesForScope(cfg *config.Config, scope satelliteScope) []config.RouteEntry {
+	var out []config.RouteEntry
+	for _, route := range routesFromConfig(cfg) {
+		if strings.EqualFold(route.Satellite, scope.name) {
+			out = append(out, route)
+		}
+	}
+	return out
+}
+
+// triggerRoutes returns every route whose trigger matches the first token. A
+// satellite alias is excluded because it selects a satellite, not a trigger.
+func triggerRoutes(cfg *config.Config, user config.UserConfig, text string) []config.RouteEntry {
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return nil
+	}
+	token := fields[0]
+	if lookupFold(user.Aliases.Satellites, token) != "" {
+		return nil
+	}
+
+	lookup := token
+	if target := lookupFold(user.Aliases.Commands, token); target != "" {
+		lookup = target
+	}
+
+	var out []config.RouteEntry
+	for _, route := range routesFromConfig(cfg) {
+		if strings.EqualFold(route.Trigger, lookup) {
+			out = append(out, route)
+		}
+	}
+	return out
+}
+
+// ambiguousCommandReply names the prefixed forms that resolve an otherwise
+// shared trigger.
+func ambiguousCommandReply(prefix string, routes []config.RouteEntry) string {
+	options := make([]string, 0, len(routes))
+	seen := make(map[string]bool)
+	for _, route := range routes {
+		name := strings.TrimSpace(route.Satellite)
+		if name == "" {
+			name = route.Trigger
+		}
+		option := strings.TrimSpace(prefix + name + " " + route.Trigger)
+		if seen[option] {
+			continue
+		}
+		seen[option] = true
+		options = append(options, option)
+	}
+	sort.Strings(options)
+	return fmt.Sprintf("That command is ambiguous. Use one of: %s.", strings.Join(options, ", "))
 }
 
 // dispatchBuiltin runs one internal command and records its outcome. On
