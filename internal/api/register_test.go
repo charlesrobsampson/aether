@@ -63,6 +63,8 @@ func TestRegisterSatellite(t *testing.T) {
 		Name: "bad",
 		Path: "/bad",
 	})
+	badPrefix := named("badprefix", "badprefix")
+	badPrefix.Prefix = "../evil"
 
 	tests := []struct {
 		name       string
@@ -138,6 +140,13 @@ func TestRegisterSatellite(t *testing.T) {
 		{
 			name:       "command without patterns",
 			satellite:  noPattern,
+			role:       auth.Admin,
+			token:      true,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "invalid satellite prefix",
+			satellite:  badPrefix,
 			role:       auth.Admin,
 			token:      true,
 			wantStatus: http.StatusBadRequest,

@@ -199,6 +199,9 @@ func validateSatellite(satellite config.SatelliteConfig) error {
 	if strings.TrimSpace(satellite.Trigger) == "" {
 		return errors.New("register: trigger is required")
 	}
+	if prefix := strings.TrimSpace(satellite.Prefix); prefix != "" && !satelliteNamePattern.MatchString(prefix) {
+		return errors.New("register: invalid satellite prefix")
+	}
 
 	endpoint, err := url.Parse(satellite.Endpoint)
 	if err != nil || endpoint.Host == "" ||

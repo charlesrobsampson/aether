@@ -47,6 +47,7 @@ func testManager(t *testing.T, role auth.Role) (*Manager, *recordingSender) {
 		"weather": {
 			Name:        "weather",
 			Trigger:     "fly",
+			Prefix:      "wx",
 			Description: "Aviation weather",
 			Commands: []config.CommandConfig{{
 				Name:     "fly",
@@ -85,7 +86,7 @@ func TestHelpListIsRoleAware(t *testing.T) {
 			t.Fatalf("HandleHelp: %v", err)
 		}
 		got := sender.last(t)
-		for _, want := range []string{"!help", "!test", "!remind", "!fly"} {
+		for _, want := range []string{"!help", "!test", "!remind", "!wx fly"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("help list does not contain %q:\n%s", want, got)
 			}
@@ -221,6 +222,7 @@ func addGlideSatellite(manager *Manager) {
 	cfg.Satellites["glider"] = config.SatelliteConfig{
 		Name:        "weather",
 		Trigger:     "glide",
+		Prefix:      "wx",
 		Description: "Glider status",
 		Commands: []config.CommandConfig{{
 			Name:     "glide",
@@ -250,10 +252,10 @@ func TestHelpGroupsCommandsBySatellite(t *testing.T) {
 		t.Fatalf("built-in help is not under Aether:\n%s", got)
 	}
 	underWeather := got[weather:]
-	if !strings.Contains(underWeather, "!fly <station>") {
+	if !strings.Contains(underWeather, "!wx fly <station>") {
 		t.Fatalf("fly is not under weather:\n%s", got)
 	}
-	if !strings.Contains(underWeather, "!glide <site>") {
+	if !strings.Contains(underWeather, "!wx glide <site>") {
 		t.Fatalf("glide is not under weather:\n%s", got)
 	}
 }
@@ -266,9 +268,47 @@ func TestHelpSatelliteGroupDetail(t *testing.T) {
 		t.Fatalf("HandleHelp: %v", err)
 	}
 	got := sender.last(t)
-	for _, want := range []string{"*weather*", "!fly <station>", "!glide <site>"} {
+	for _, want := range []string{"*weather*", "!wx fly <station>", "!wx glide <site>"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("group detail lacks %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestHelpSatelliteGroupShortPrefix(t *testing.T) {
+	manager, sender := testManager(t, auth.User)
+
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help wx"}); err != nil {
+		t.Fatalf("HandleHelp: %v", err)
+	}
+	got := sender.last(t)
+	for _, want := range []string{"*weather*", "!wx fly <station>"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("short-prefix group detail lacks %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestHelpListsSatelliteConfigForAdmins(t *testing.T) {
+	manager, sender := testManager(t, auth.Admin)
+
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help weather"}); err != nil {
+		t.Fatalf("HandleHelp: %v", err)
+	}
+	got := sender.last(t)
+	if !strings.Contains(got, "!wx config set <key> <value>") {
+		t.Fatalf("group detail lacks the satellite config command:\n%s", got)
+	}
+}
+
+func TestHelpHidesSatelliteConfigFromUsers(t *testing.T) {
+	manager, sender := testManager(t, auth.User)
+
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help weather"}); err != nil {
+		t.Fatalf("HandleHelp: %v", err)
+	}
+	got := sender.last(t)
+	if strings.Contains(got, "config set <key> <value>") {
+		t.Fatalf("user help leaked the admin satellite config command:\n%s", got)
 	}
 }

@@ -49,10 +49,24 @@ func newScopedFixture(t *testing.T) *scopedFixture {
 	}))
 	t.Cleanup(f.server.Close)
 
+	testutil.WriteJSON(t, filepath.Join(f.root, "satellites", "wind-predictor.json"), config.SatelliteConfig{
+		Name:        "wind-predictor",
+		Trigger:     "fly",
+		Endpoint:    f.server.URL,
+		Prefix:      "wind",
+		Description: "Run-aware wind and gust predictions for flying sites",
+		Commands: []config.CommandConfig{{
+			Name:     "fly",
+			Path:     "/fly",
+			Patterns: []string{"fly <station>"},
+			Args:     []config.ArgDef{{Name: "station", Type: "string"}},
+		}},
+	})
 	testutil.WriteJSON(t, filepath.Join(f.root, "satellites", "glider.json"), config.SatelliteConfig{
 		Name:        "wind-predictor",
 		Trigger:     "glider",
 		Endpoint:    f.server.URL,
+		Prefix:      "wind",
 		Description: "Check the glider",
 		Commands: []config.CommandConfig{{
 			Name:     "glider_action",
@@ -65,6 +79,7 @@ func newScopedFixture(t *testing.T) *scopedFixture {
 		Name:        "wind-predictor",
 		Trigger:     "loaded",
 		Endpoint:    f.server.URL,
+		Prefix:      "wind",
 		Description: "Mark the glider loaded",
 		Commands: []config.CommandConfig{{
 			Name:     "glider_loaded",
@@ -192,6 +207,42 @@ func TestScopedSatelliteCommands(t *testing.T) {
 		}
 	})
 
+	t.Run("short prefix selects the satellite", func(t *testing.T) {
+		f.dispatch(t, "!wind fly FPS")
+		call := f.lastCall(t)
+		if call.Trigger != "fly" || call.Text != "fly FPS" || call.Satellite != "wind-predictor" {
+			t.Fatalf("envelope = %+v", call)
+		}
+	})
+
+	t.Run("short prefix selects a sibling file", func(t *testing.T) {
+		f.dispatch(t, "!wind loaded the glider")
+		call := f.lastCall(t)
+		if call.Trigger != "loaded" || call.Text != "loaded the glider" {
+			t.Fatalf("envelope = %+v", call)
+		}
+	})
+
+	t.Run("short prefix forwards config to the primary file", func(t *testing.T) {
+		f.dispatch(t, "!wind config set alert_schedule.nightly_local 21:45")
+		satellite, text := f.builtin(t)
+		if satellite != "config" {
+			t.Fatalf("builtin = %q, want config", satellite)
+		}
+		want := "config set wind-predictor.alert_schedule.nightly_local 21:45"
+		if text != want {
+			t.Fatalf("builtin text = %q, want %q", text, want)
+		}
+	})
+
+	t.Run("short prefix help names the canonical satellite", func(t *testing.T) {
+		f.dispatch(t, "!wind help")
+		satellite, text := f.builtin(t)
+		if satellite != "help" || text != "help wind-predictor" {
+			t.Fatalf("builtin = %q, text = %q", satellite, text)
+		}
+	})
+
 	t.Run("satellite alias prefixes a trigger", func(t *testing.T) {
 		f.dispatch(t, "!wind glider status")
 		call := f.lastCall(t)
@@ -259,7 +310,7 @@ func TestScopedSatelliteCommands(t *testing.T) {
 		f.mu.Lock()
 		replies := append([]string(nil), f.replies...)
 		f.mu.Unlock()
-		if len(replies) != 1 || !strings.Contains(replies[0], "wind-predictor config set") {
+		if len(replies) != 1 || !strings.Contains(replies[0], "wind config set") {
 			t.Fatalf("replies = %v", replies)
 		}
 	})
@@ -272,11 +323,13 @@ func TestAmbiguousTriggerRequiresSatellitePrefix(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
+	prefixes := map[string]string{"alpha": "a", "beta": "be"}
 	for _, name := range []string{"alpha", "beta"} {
 		testutil.WriteJSON(t, filepath.Join(root, "satellites", name+".json"), config.SatelliteConfig{
 			Name:     name,
 			Trigger:  "ping",
 			Endpoint: server.URL,
+			Prefix:   prefixes[name],
 			Commands: []config.CommandConfig{{
 				Name:     "ping",
 				Path:     "/ping",
@@ -318,8 +371,8 @@ func TestAmbiguousTriggerRequiresSatellitePrefix(t *testing.T) {
 	if len(replies) != 1 || !strings.Contains(replies[0], "ambiguous") {
 		t.Fatalf("replies = %v, want an ambiguity hint", replies)
 	}
-	if !strings.Contains(replies[0], "alpha ping") || !strings.Contains(replies[0], "beta ping") {
-		t.Fatalf("reply = %q, want both prefixed forms", replies[0])
+	if !strings.Contains(replies[0], "a ping") || !strings.Contains(replies[0], "be ping") {
+		t.Fatalf("reply = %q, want both short prefixed forms", replies[0])
 	}
 
 	var status, errText string
@@ -330,8 +383,8 @@ func TestAmbiguousTriggerRequiresSatellitePrefix(t *testing.T) {
 		t.Fatalf("route_log = %q, %q", status, errText)
 	}
 
-	// An explicit prefix resolves the conflict.
-	rt.Dispatch(context.Background(), model.Inbound{Sender: "+15555550102", Text: "!alpha ping"})
+	// An explicit short prefix resolves the conflict.
+	rt.Dispatch(context.Background(), model.Inbound{Sender: "+15555550102", Text: "!a ping"})
 	var satellite string
 	if err := st.DB().QueryRow(`SELECT satellite FROM route_log ORDER BY id DESC LIMIT 1`).Scan(&satellite); err != nil {
 		t.Fatalf("read route_log: %v", err)

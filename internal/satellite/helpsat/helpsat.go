@@ -38,6 +38,9 @@ type Entry struct {
 	// Group is the satellite heading this entry is listed under. Built-ins
 	// use "Aether"; satellite entries use the satellite's canonical name.
 	Group string
+	// Prefix is the satellite's optional short routing prefix, for example
+	// "wind". It is empty for built-ins and for satellites without one.
+	Prefix string
 	// Trigger is the canonical first token.
 	Trigger string
 	// Usage is the one-line usage shown in detail view.
@@ -155,6 +158,9 @@ func (m *Manager) entries(cfg *config.Config, sender string, role auth.Role) []E
 			names = append(names, name)
 		}
 		sort.Strings(names)
+		// Satellite config is a per-satellite command, so remember each
+		// satellite's short prefix and add one config entry per group below.
+		groupPrefixes := make(map[string]string)
 		for _, name := range names {
 			satellite := cfg.Satellites[name]
 			trigger := strings.TrimSpace(satellite.Trigger)
@@ -164,6 +170,7 @@ func (m *Manager) entries(cfg *config.Config, sender string, role auth.Role) []E
 			entry := Entry{
 				Name:        satellite.Name,
 				Group:       satellite.Name,
+				Prefix:      strings.TrimSpace(satellite.Prefix),
 				Trigger:     trigger,
 				Usage:       trigger,
 				Description: strings.TrimSpace(satellite.Description),
@@ -177,6 +184,9 @@ func (m *Manager) entries(cfg *config.Config, sender string, role auth.Role) []E
 			if entry.Description == "" {
 				entry.Description = "Satellite command"
 			}
+			if _, ok := groupPrefixes[entry.Group]; !ok || groupPrefixes[entry.Group] == "" {
+				groupPrefixes[entry.Group] = entry.Prefix
+			}
 			for _, command := range satellite.Commands {
 				for _, pattern := range command.Patterns {
 					if pattern = strings.TrimSpace(pattern); pattern != "" {
@@ -185,6 +195,33 @@ func (m *Manager) entries(cfg *config.Config, sender string, role auth.Role) []E
 				}
 			}
 			out = append(out, entry)
+		}
+
+		// Satellite settings are edited through the satellite's own config
+		// command. It is admin-only and private-chat-only, so it only appears
+		// for callers who can use it.
+		if role >= auth.Admin {
+			groups := make([]string, 0, len(groupPrefixes))
+			for group := range groupPrefixes {
+				groups = append(groups, group)
+			}
+			sort.Strings(groups)
+			for _, group := range groups {
+				out = append(out, Entry{
+					Name:        group,
+					Group:       group,
+					Prefix:      groupPrefixes[group],
+					Trigger:     "config",
+					Usage:       "config set <key> <value>",
+					Patterns:    []string{"config set <key> <value>"},
+					Description: "Change " + group + " settings",
+					Role:        auth.Admin,
+					Details: []string{
+						"Satellite settings require a private chat.",
+						"Unprefixed config changes Aether settings instead.",
+					},
+				})
+			}
 		}
 	}
 
@@ -343,15 +380,21 @@ func renderGroup(entries []Entry, group, prefix string) string {
 }
 
 // writeEntry prints one command. Satellite entries print each configured
-// pattern so a satellite that owns several commands is fully represented.
+// pattern so a satellite that owns several commands is fully represented. A
+// satellite with a short prefix is shown with that prefix, because prefixed
+// commands are the unambiguous form.
 func writeEntry(b *strings.Builder, entry Entry, prefix string) {
+	commandPrefix := prefix
+	if entry.Prefix != "" {
+		commandPrefix += entry.Prefix + " "
+	}
 	if len(entry.Patterns) > 0 {
 		for _, pattern := range entry.Patterns {
-			fmt.Fprintf(b, "  *%s%s*\n", prefix, pattern)
+			fmt.Fprintf(b, "  *%s%s*\n", commandPrefix, pattern)
 		}
 		return
 	}
-	fmt.Fprintf(b, "  *%s%s*", prefix, entry.Usage)
+	fmt.Fprintf(b, "  *%s%s*", commandPrefix, entry.Usage)
 	if entry.Description != "" {
 		fmt.Fprintf(b, " — %s", entry.Description)
 	}
@@ -372,14 +415,19 @@ func groups(entries []Entry) []string {
 	return out
 }
 
-// groupForTopic resolves "help <satellite>" to the group heading.
+// groupForTopic resolves "help <satellite>" to the group heading. The
+// satellite's short prefix is accepted as well.
 func groupForTopic(entries []Entry, topic string) string {
 	topic = strings.TrimSpace(topic)
 	if topic == "" {
 		return ""
 	}
 	for _, entry := range entries {
-		if entry.Group != "" && strings.EqualFold(entry.Group, topic) {
+		if entry.Group == "" {
+			continue
+		}
+		if strings.EqualFold(entry.Group, topic) ||
+			(entry.Prefix != "" && strings.EqualFold(entry.Prefix, topic)) {
 			return entry.Group
 		}
 	}
@@ -389,13 +437,17 @@ func groupForTopic(entries []Entry, topic string) string {
 // renderDetail expands one command, including usage, description, and any
 // satellite patterns or aliases.
 func renderDetail(entry Entry, prefix string) string {
+	commandPrefix := prefix
+	if entry.Prefix != "" {
+		commandPrefix += entry.Prefix + " "
+	}
 	var b strings.Builder
 	if len(entry.Patterns) > 0 {
 		for _, pattern := range entry.Patterns {
-			fmt.Fprintf(&b, "*%s%s*\n", prefix, pattern)
+			fmt.Fprintf(&b, "*%s%s*\n", commandPrefix, pattern)
 		}
 	} else {
-		fmt.Fprintf(&b, "*%s%s*\n", prefix, entry.Usage)
+		fmt.Fprintf(&b, "*%s%s*\n", commandPrefix, entry.Usage)
 	}
 	if entry.Description != "" {
 		b.WriteString(entry.Description)

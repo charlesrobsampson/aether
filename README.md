@@ -52,9 +52,9 @@ All configuration is JSON under `AETHER_CONFIG_DIR` (default
   groups).
 - `users/<phone>.json` holds per-user prefixes, timezone, mute flag, aliases, and
   satellite IDs.
-- `satellites/<name>.json` declares a satellite's trigger, endpoint, and command
-  patterns; `routes.json` is regenerated from these files and is never edited by
-  hand.
+- `satellites/<name>.json` declares a satellite's trigger, endpoint, optional
+  short `prefix`, and command patterns; `routes.json` is regenerated from these
+  files and is never edited by hand.
 
 Set `AETHER_JWT_SECRET` to override `auth.jwt_secret`, and `AETHER_INGRESS_TOKEN`
 to require `X-Aether-Token` on `/receive`.
@@ -74,19 +74,23 @@ persona prefixes for that user; commands are then typed bare, for example
 `config list`.
 
 Unprefixed `!config` always means Aether's own settings. Satellite-owned
-settings use the satellite name as a prefix:
+settings use the satellite's prefix:
 
 ```
-!wind-predictor config set alert_schedule.nightly_local 21:45
+!wind config set alert_schedule.nightly_local 21:45
 ```
 
-Satellite triggers accept the same prefix, for example
-`!wind-predictor fly FPS` or `!wind-predictor glider status`. The prefix is
-optional when the trigger is unique; if two satellites share a trigger, Aether
-replies with the prefixed forms to use. `!help` lists every command under its
-satellite, and `!help wind-predictor` lists one satellite. Satellite config
-forwarding is admin-only and must originate in a private chat; groups ignore it
-silently.
+A satellite can declare a short `prefix` in its JSON file, such as `"wind"` for
+`wind-predictor`. The canonical name and file key still work, so both
+`!wind config set ...` and `!wind-predictor config set ...` are accepted.
+
+Satellite triggers accept the same prefix, for example `!wind fly FPS` or
+`!wind glider status`. The prefix is optional when the trigger is unique; if two
+satellites share a trigger, Aether replies with the prefixed forms to use.
+`!help` lists every command under its satellite, and admins also see each
+satellite's config command. `!help wind` or `!help wind-predictor` lists one
+satellite. Satellite config forwarding is admin-only and must originate in a
+private chat; groups ignore it silently.
 
 Command names, subcommands, satellite triggers, aliases, and prefixes are
 case-insensitive, so a phone that autocapitalizes the first word still works

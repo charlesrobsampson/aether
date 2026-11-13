@@ -20,6 +20,7 @@ SQLite, and rebuilding `routes.json`.
   "name": "wind-predictor",
   "trigger": "fly",
   "endpoint": "http://127.0.0.1:9463",
+  "prefix": "wind",
   "commands": [
     {
       "name": "fly",
@@ -37,6 +38,9 @@ Rules enforced by registration:
 
 - `name` matches `^[a-z0-9][a-z0-9-]*$`; it becomes the file name, so path
   separators and dot segments are rejected.
+- `prefix`, when present, matches the same pattern. It is a short alias for
+  addressing the satellite (`wind` instead of `wind-predictor`); the canonical
+  name and file key remain valid.
 - `name` and `trigger` must be unique, and neither may shadow the built-ins
   `config`, `admin`, `remind`, or `test` (`409` conflict).
 - `endpoint` is an absolute `http` or `https` URL.
@@ -178,18 +182,20 @@ using this mapping. The role check always happens in Aether; schema validation
 belongs to the satellite. `satellite_ids` is admin-managed and is not part of the
 user `!config set` whitelist.
 
-Users can address the satellite directly by prefixing `config` with its name:
+Users can address the satellite directly by prefixing `config` with its short
+prefix (or canonical name):
 
 ```
-!wind-predictor config set alert_schedule.nightly_local 21:45
+!wind config set alert_schedule.nightly_local 21:45
 ```
 
 This is equivalent to `!config set wind-predictor.alert_schedule.nightly_local
 21:45`. The unprefixed `!config` remains Aether-level, so a satellite config
 change always needs the prefix. Satellite triggers accept the same prefix
-(`!wind-predictor fly FPS`); it is optional when the trigger is unique. Config
-forwarding is admin-only and must originate in a private chat; groups ignore it
-silently.
+(`!wind fly FPS`); it is optional when the trigger is unique. For admins,
+`!help` lists the satellite config command under the satellite, and `!help wind`
+lists that satellite's commands. Config forwarding is admin-only and must
+originate in a private chat; groups ignore it silently.
 
 ## 7. Test it
 

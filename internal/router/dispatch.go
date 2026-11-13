@@ -146,7 +146,7 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 			Status:    "dropped",
 			Error:     "ambiguous trigger",
 		})
-		r.replyUser(ctx, in, ambiguousCommandReply(prefix, matches))
+		r.replyUser(ctx, in, ambiguousCommandReply(cfg, prefix, matches))
 		return
 	}
 
@@ -233,16 +233,19 @@ func (r *Router) resolveBuiltin(text string) (Builtin, bool) {
 
 // satelliteScope is an explicit "<satellite> <command>" prefix. key is the
 // satellite file key used for config forwarding; name is the canonical
-// satellite name shared by every file that belongs to the same satellite.
+// satellite name shared by every file that belongs to the same satellite;
+// prefix is the optional short name shown in help and hints.
 type satelliteScope struct {
-	key  string
-	name string
+	key    string
+	name   string
+	prefix string
 }
 
-// resolveSatelliteScope recognizes a leading satellite name or satellite alias.
-// It deliberately returns the remainder without validating it: dispatchScoped
-// decides whether the remainder names a command that belongs to the satellite,
-// and otherwise lets the legacy alias path handle forms such as "wind FPS".
+// resolveSatelliteScope recognizes a leading satellite name, file key, short
+// prefix, or satellite alias. It deliberately returns the remainder without
+// validating it: dispatchScoped decides whether the remainder names a command
+// that belongs to the satellite, and otherwise lets the legacy alias path
+// handle forms such as "wind FPS".
 func resolveSatelliteScope(cfg *config.Config, user config.UserConfig, text string) (satelliteScope, string, bool) {
 	fields := strings.Fields(text)
 	if len(fields) == 0 {
@@ -261,13 +264,18 @@ func resolveSatelliteScope(cfg *config.Config, user config.UserConfig, text stri
 	if name == "" {
 		name = key
 	}
-	return satelliteScope{key: key, name: name}, strings.Join(fields[1:], " "), true
+	return satelliteScope{
+		key:    key,
+		name:   name,
+		prefix: satellitePrefix(cfg, name),
+	}, strings.Join(fields[1:], " "), true
 }
 
-// lookupSatellite resolves a satellite by canonical name first and file key
-// second. Several files may share a name (for example one satellite that owns
-// the fly, glider, and loaded triggers); an exact file-key match is preferred
-// so config forwarding uses the file that carries the endpoint and mapping.
+// lookupSatellite resolves a satellite by canonical name, file key, or short
+// prefix. Several files may share a name (for example one satellite that owns
+// the fly, glider, and loaded triggers); the file whose key equals the
+// canonical name is preferred so config forwarding uses the file that carries
+// the endpoint and mapping.
 func lookupSatellite(cfg *config.Config, token string) (string, config.SatelliteConfig, bool) {
 	if cfg == nil || strings.TrimSpace(token) == "" {
 		return "", config.SatelliteConfig{}, false
@@ -285,7 +293,7 @@ func lookupSatellite(cfg *config.Config, token string) (string, config.Satellite
 		if !strings.EqualFold(strings.TrimSpace(satellite.Name), token) {
 			continue
 		}
-		if strings.EqualFold(key, token) {
+		if strings.EqualFold(key, strings.TrimSpace(satellite.Name)) {
 			return key, satellite, true
 		}
 		if nameMatch == "" {
@@ -301,7 +309,56 @@ func lookupSatellite(cfg *config.Config, token string) (string, config.Satellite
 			return key, cfg.Satellites[key], true
 		}
 	}
+
+	var prefixMatch string
+	for _, key := range keys {
+		satellite := cfg.Satellites[key]
+		if !strings.EqualFold(strings.TrimSpace(satellite.Prefix), token) {
+			continue
+		}
+		if strings.EqualFold(key, strings.TrimSpace(satellite.Name)) {
+			return key, satellite, true
+		}
+		if prefixMatch == "" {
+			prefixMatch = key
+		}
+	}
+	if prefixMatch != "" {
+		return prefixMatch, cfg.Satellites[prefixMatch], true
+	}
 	return "", config.SatelliteConfig{}, false
+}
+
+// satellitePrefix returns the configured short prefix for a canonical satellite
+// name. Sibling files may repeat it; the first non-empty value wins.
+func satellitePrefix(cfg *config.Config, name string) string {
+	if cfg == nil || strings.TrimSpace(name) == "" {
+		return ""
+	}
+	keys := make([]string, 0, len(cfg.Satellites))
+	for key := range cfg.Satellites {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		satellite := cfg.Satellites[key]
+		if !strings.EqualFold(strings.TrimSpace(satellite.Name), name) {
+			continue
+		}
+		if prefix := strings.TrimSpace(satellite.Prefix); prefix != "" {
+			return prefix
+		}
+	}
+	return ""
+}
+
+// scopeName returns the preferred way to address a satellite in a hint: its
+// short prefix when configured, otherwise its canonical name.
+func (s satelliteScope) scopeName() string {
+	if prefix := strings.TrimSpace(s.prefix); prefix != "" {
+		return prefix
+	}
+	return s.name
 }
 
 // dispatchScoped handles an explicit satellite prefix. It reports whether the
@@ -328,7 +385,7 @@ func (r *Router) dispatchScoped(ctx context.Context, cfg *config.Config, in mode
 			})
 			r.replyUser(ctx, in, fmt.Sprintf(
 				`Use %q to change a %s setting.`,
-				prefix+scope.name+" config set <key> <value>", scope.name))
+				prefix+scope.scopeName()+" config set <key> <value>", scope.name))
 			return true
 		}
 		if builtin, ok := r.resolveBuiltin("config"); ok {
@@ -434,14 +491,17 @@ func triggerRoutes(cfg *config.Config, user config.UserConfig, text string) []co
 }
 
 // ambiguousCommandReply names the prefixed forms that resolve an otherwise
-// shared trigger.
-func ambiguousCommandReply(prefix string, routes []config.RouteEntry) string {
+// shared trigger. The short satellite prefix is used when one is configured.
+func ambiguousCommandReply(cfg *config.Config, prefix string, routes []config.RouteEntry) string {
 	options := make([]string, 0, len(routes))
 	seen := make(map[string]bool)
 	for _, route := range routes {
 		name := strings.TrimSpace(route.Satellite)
 		if name == "" {
 			name = route.Trigger
+		}
+		if short := satellitePrefix(cfg, name); short != "" {
+			name = short
 		}
 		option := strings.TrimSpace(prefix + name + " " + route.Trigger)
 		if seen[option] {

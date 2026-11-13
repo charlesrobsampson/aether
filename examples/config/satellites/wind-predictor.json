@@ -2,6 +2,7 @@
   "name": "wind-predictor",
   "trigger": "fly",
   "endpoint": "http://127.0.0.1:9463",
+  "prefix": "wind",
   "commands": [
     {
       "name": "fly",

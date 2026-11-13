@@ -101,11 +101,15 @@ type Aliases struct {
 }
 
 type SatelliteConfig struct {
-	Name        string          `json:"name"`
-	Trigger     string          `json:"trigger"`
-	Endpoint    string          `json:"endpoint"`
-	Description string          `json:"description,omitempty"`
-	Commands    []CommandConfig `json:"commands"`
+	Name        string `json:"name"`
+	Trigger     string `json:"trigger"`
+	Endpoint    string `json:"endpoint"`
+	Description string `json:"description,omitempty"`
+	// Prefix is an optional short name used to address the satellite, for
+	// example "wind" instead of "wind-predictor". The canonical name and file
+	// key remain valid so existing commands keep working.
+	Prefix   string          `json:"prefix,omitempty"`
+	Commands []CommandConfig `json:"commands"`
 }
 
 type CommandConfig struct {
