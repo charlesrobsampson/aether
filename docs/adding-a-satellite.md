@@ -186,16 +186,26 @@ Users can address the satellite directly by prefixing `config` with its short
 prefix (or canonical name):
 
 ```
+!wind config list
+!wind config get alert_schedule.nightly_local
+!wind config export
 !wind config set alert_schedule.nightly_local 21:45
 ```
 
-This is equivalent to `!config set wind-predictor.alert_schedule.nightly_local
-21:45`. The unprefixed `!config` remains Aether-level, so a satellite config
-change always needs the prefix. Satellite triggers accept the same prefix
-(`!wind fly FPS`); it is optional when the trigger is unique. For admins,
-`!help` lists the satellite config command under the satellite, and `!help wind`
-lists that satellite's commands. Config forwarding is admin-only and must
-originate in a private chat; groups ignore it silently.
+Reads use `GET /api/v1/config?user=<id>` and expect a flat
+`{"settings":[{"key":"...","value":"...","note":"..."}]}` response. A non-empty
+`note` marks a default or read-only value, so `export` skips it and `get` does
+not offer a `Set with:` line. Writes use `POST /api/v1/config` with a
+user-scoped RFC6902 patch. `!wind config set ...` is equivalent to
+`!config set wind-predictor.alert_schedule.nightly_local 21:45`. The unprefixed
+`!config` remains Aether-level, so a satellite config change always needs the
+prefix. Satellite triggers accept the same prefix (`!wind fly FPS`); it is
+optional when the trigger is unique. Aether's built-ins accept the same shape
+through `!aether <command>`; only built-ins resolve after that prefix. For
+admins, `!help` lists the satellite config command under the satellite heading,
+and `!help wind` lists that satellite's commands. Config reads and forwarding
+are admin-only and must originate in a private chat; groups ignore them
+silently.
 
 ## 7. Test it
 

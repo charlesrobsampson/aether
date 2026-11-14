@@ -86,7 +86,7 @@ func TestHelpListIsRoleAware(t *testing.T) {
 			t.Fatalf("HandleHelp: %v", err)
 		}
 		got := sender.last(t)
-		for _, want := range []string{"!help", "!test", "!remind", "!wx fly"} {
+		for _, want := range []string{"!help", "!test", "!remind", "!fly <station>"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("help list does not contain %q:\n%s", want, got)
 			}
@@ -241,7 +241,7 @@ func TestHelpGroupsCommandsBySatellite(t *testing.T) {
 	got := sender.last(t)
 
 	aether := strings.Index(got, "*Aether*")
-	weather := strings.Index(got, "*weather*")
+	weather := strings.Index(got, "*wx*")
 	if aether < 0 || weather < 0 {
 		t.Fatalf("help lacks group headings:\n%s", got)
 	}
@@ -252,11 +252,14 @@ func TestHelpGroupsCommandsBySatellite(t *testing.T) {
 		t.Fatalf("built-in help is not under Aether:\n%s", got)
 	}
 	underWeather := got[weather:]
-	if !strings.Contains(underWeather, "!wx fly <station>") {
+	if !strings.Contains(underWeather, "!fly <station>") {
 		t.Fatalf("fly is not under weather:\n%s", got)
 	}
-	if !strings.Contains(underWeather, "!wx glide <site>") {
+	if !strings.Contains(underWeather, "!glide <site>") {
 		t.Fatalf("glide is not under weather:\n%s", got)
+	}
+	if strings.Contains(underWeather, "wx fly") || strings.Contains(underWeather, "wx glide") {
+		t.Fatalf("satellite prefix repeated on every command:\n%s", got)
 	}
 }
 
@@ -268,7 +271,7 @@ func TestHelpSatelliteGroupDetail(t *testing.T) {
 		t.Fatalf("HandleHelp: %v", err)
 	}
 	got := sender.last(t)
-	for _, want := range []string{"*weather*", "!wx fly <station>", "!wx glide <site>"} {
+	for _, want := range []string{"*wx*", "!fly <station>", "!glide <site>"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("group detail lacks %q:\n%s", want, got)
 		}
@@ -282,7 +285,7 @@ func TestHelpSatelliteGroupShortPrefix(t *testing.T) {
 		t.Fatalf("HandleHelp: %v", err)
 	}
 	got := sender.last(t)
-	for _, want := range []string{"*weather*", "!wx fly <station>"} {
+	for _, want := range []string{"*wx*", "!fly <station>"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("short-prefix group detail lacks %q:\n%s", want, got)
 		}
@@ -296,7 +299,7 @@ func TestHelpListsSatelliteConfigForAdmins(t *testing.T) {
 		t.Fatalf("HandleHelp: %v", err)
 	}
 	got := sender.last(t)
-	if !strings.Contains(got, "!wx config set <key> <value>") {
+	if !strings.Contains(got, "!config set <key> <value>") {
 		t.Fatalf("group detail lacks the satellite config command:\n%s", got)
 	}
 }

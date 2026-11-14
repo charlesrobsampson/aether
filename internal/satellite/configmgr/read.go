@@ -92,20 +92,28 @@ func parseCommandFields(fields []string) (command, error) {
 	}
 }
 
-// parsePhoneOnly accepts an optional @<phone> target after list/export.
+// parsePhoneOnly accepts an optional @<phone> target after list/export, or a
+// bare satellite name. The latter is resolved by the caller; keeping it here
+// lets "config list wind-predictor" read satellite-owned settings.
 func parsePhoneOnly(action string, fields []string) (string, error) {
 	if len(fields) == 0 {
 		return "", nil
 	}
 	bad := statusError(http.StatusBadRequest, `config: expected "config %s [@phone]"`, action)
-	if len(fields) != 1 || !strings.HasPrefix(fields[0], "@") {
+	if len(fields) != 1 {
 		return "", bad
 	}
-	phone := strings.TrimPrefix(fields[0], "@")
-	if phone == "" {
+	if strings.HasPrefix(fields[0], "@") {
+		phone := strings.TrimPrefix(fields[0], "@")
+		if phone == "" {
+			return "", bad
+		}
+		return phone, nil
+	}
+	if strings.TrimSpace(fields[0]) == "" {
 		return "", bad
 	}
-	return phone, nil
+	return fields[0], nil
 }
 
 // parseGetFields accepts "<key>" or "@<phone> <key>".
@@ -163,9 +171,12 @@ func parseCommandArgs(args map[string]any) (command, error) {
 }
 
 func (m *Manager) handleRead(t sdk.Transmission, cmd command) error {
-	cfg, actor, _, role, err := m.authorize(t)
+	cfg, actor, sender, role, err := m.authorize(t)
 	if err != nil {
 		return err
+	}
+	if name, key, ok := satelliteReadTarget(cfg, cmd); ok {
+		return m.handleSatelliteRead(t, cfg, actor, sender, role, name, cmd.action, key)
 	}
 	if groupAdminAttempt(t.GroupID, actor, cmd.phone, cmd.target) {
 		return sdk.ErrIgnored

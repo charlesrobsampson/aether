@@ -302,15 +302,88 @@ func TestScopedSatelliteCommands(t *testing.T) {
 		}
 	})
 
-	t.Run("scoped config rejects read actions", func(t *testing.T) {
-		f.dispatch(t, "!wind-predictor config list")
+	t.Run("scoped config list forwards the satellite target", func(t *testing.T) {
+		f.dispatch(t, "!wind config list")
+		satellite, text := f.builtin(t)
+		if satellite != "config" {
+			t.Fatalf("builtin = %q, want config", satellite)
+		}
+		if text != "config list wind-predictor" {
+			t.Fatalf("builtin text = %q", text)
+		}
+	})
+
+	t.Run("scoped config get forwards the satellite key", func(t *testing.T) {
+		f.dispatch(t, "!wind config get alert_schedule.nightly_local")
+		_, text := f.builtin(t)
+		want := "config get wind-predictor.alert_schedule.nightly_local"
+		if text != want {
+			t.Fatalf("builtin text = %q, want %q", text, want)
+		}
+	})
+
+	t.Run("scoped config export forwards the satellite target", func(t *testing.T) {
+		f.dispatch(t, "!wind config export")
+		_, text := f.builtin(t)
+		if text != "config export wind-predictor" {
+			t.Fatalf("builtin text = %q", text)
+		}
+	})
+
+	t.Run("scoped config rejects unknown actions", func(t *testing.T) {
+		f.dispatch(t, "!wind config delete alert_schedule")
 		if satellite, _ := f.builtin(t); satellite != "" {
 			t.Fatalf("builtin = %q, want no built-in", satellite)
 		}
 		f.mu.Lock()
 		replies := append([]string(nil), f.replies...)
 		f.mu.Unlock()
-		if len(replies) != 1 || !strings.Contains(replies[0], "wind config set") {
+		if len(replies) != 1 || !strings.Contains(replies[0], "wind config list") {
+			t.Fatalf("replies = %v", replies)
+		}
+	})
+}
+
+func TestAetherPrefixSelectsBuiltins(t *testing.T) {
+	f := newScopedFixture(t)
+
+	t.Run("config is dispatched to the built-in", func(t *testing.T) {
+		f.dispatch(t, "!aether config list")
+		satellite, text := f.builtin(t)
+		if satellite != "config" || text != "config list" {
+			t.Fatalf("builtin = %q, text = %q", satellite, text)
+		}
+	})
+
+	t.Run("help is dispatched to the built-in", func(t *testing.T) {
+		f.dispatch(t, "!aether help wind")
+		satellite, text := f.builtin(t)
+		if satellite != "help" || text != "help wind" {
+			t.Fatalf("builtin = %q, text = %q", satellite, text)
+		}
+	})
+
+	t.Run("bare aether shows help", func(t *testing.T) {
+		f.dispatch(t, "!aether")
+		satellite, text := f.builtin(t)
+		if satellite != "help" || text != "help" {
+			t.Fatalf("builtin = %q, text = %q", satellite, text)
+		}
+	})
+
+	t.Run("satellite triggers are not reachable through aether", func(t *testing.T) {
+		f.dispatch(t, "!aether fly FPS")
+		if satellite, _ := f.builtin(t); satellite != "" {
+			t.Fatalf("builtin = %q, want no built-in", satellite)
+		}
+		f.mu.Lock()
+		calls := len(f.calls)
+		replies := append([]string(nil), f.replies...)
+		f.mu.Unlock()
+		if calls != 0 {
+			t.Fatalf("satellite calls = %d, want 0", calls)
+		}
+		if len(replies) != 1 || !strings.Contains(replies[0], "Unknown command") {
 			t.Fatalf("replies = %v", replies)
 		}
 	})

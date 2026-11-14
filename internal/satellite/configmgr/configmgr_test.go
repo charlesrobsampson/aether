@@ -60,6 +60,7 @@ func newTestConfig(t *testing.T) (root string, cfg *config.Config, st *store.Sto
 		Name:     "wind-predictor",
 		Trigger:  "fly",
 		Endpoint: "http://127.0.0.1:1",
+		Prefix:   "wind",
 	})
 
 	cfg = reloadConfig(t, root)
@@ -568,6 +569,144 @@ func TestForwardSatelliteConfig(t *testing.T) {
 		if got := atomic.LoadInt32(&calls); got != 0 {
 			t.Fatalf("unmapped satellite made %d HTTP calls, want 0", got)
 		}
+	})
+}
+
+func TestSatelliteConfigRead(t *testing.T) {
+	settingsBody := `{"settings":[
+		{"key":"display_name","value":"Alice"},
+		{"key":"alert_schedule.nightly_local","value":"22:00"},
+		{"key":"alert_schedule.morning_local","value":"(station default)","note":"default"},
+		{"key":"aether_recipient","value":"+15555550100","note":"read-only"}
+	]}`
+
+	newServer := func(t *testing.T) *httptest.Server {
+		t.Helper()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				t.Errorf("method = %q, want GET", r.Method)
+			}
+			if r.URL.Path != "/api/v1/config" {
+				t.Errorf("path = %q, want /api/v1/config", r.URL.Path)
+			}
+			if got := r.URL.Query().Get("user"); got != "alice" {
+				t.Errorf("user = %q, want alice", got)
+			}
+			if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+				t.Errorf("Authorization = %q, want Bearer token", r.Header.Get("Authorization"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(settingsBody))
+		}))
+		t.Cleanup(server.Close)
+		return server
+	}
+
+	t.Run("list renders satellite settings", func(t *testing.T) {
+		_, cfg, _ := newTestConfig(t)
+		cfg.Admin.Admins = append(cfg.Admin.Admins, userPhone)
+		satellite := cfg.Satellites["wind-predictor"]
+		satellite.Endpoint = newServer(t).URL
+		cfg.Satellites["wind-predictor"] = satellite
+		manager, recorder := readManager(t, cfg)
+
+		if err := manager.Handle(sdk.Transmission{
+			Trigger: "config",
+			Text:    "config list wind-predictor",
+			Sender:  userPhone,
+		}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+		got := recorder.last(t)
+		for _, want := range []string{
+			"display_name = Alice",
+			"alert_schedule.nightly_local = 22:00",
+			"alert_schedule.morning_local = (station default) (default)",
+			"aether_recipient = +15555550100 (read-only)",
+			`Send "!wind config get <key>" for one setting.`,
+		} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("list lacks %q:\n%s", want, got)
+			}
+		}
+	})
+
+	t.Run("get adds a scoped set line", func(t *testing.T) {
+		_, cfg, _ := newTestConfig(t)
+		cfg.Admin.Admins = append(cfg.Admin.Admins, userPhone)
+		satellite := cfg.Satellites["wind-predictor"]
+		satellite.Endpoint = newServer(t).URL
+		cfg.Satellites["wind-predictor"] = satellite
+		manager, recorder := readManager(t, cfg)
+
+		if err := manager.Handle(sdk.Transmission{
+			Trigger: "config",
+			Text:    "config get wind-predictor.alert_schedule.nightly_local",
+			Sender:  userPhone,
+		}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+		want := "alert_schedule.nightly_local = 22:00\nSet with: !wind config set alert_schedule.nightly_local 22:00"
+		if got := recorder.last(t); got != want {
+			t.Fatalf("get =\n%s\nwant:\n%s", got, want)
+		}
+	})
+
+	t.Run("export skips defaults and read-only values", func(t *testing.T) {
+		_, cfg, _ := newTestConfig(t)
+		cfg.Admin.Admins = append(cfg.Admin.Admins, userPhone)
+		satellite := cfg.Satellites["wind-predictor"]
+		satellite.Endpoint = newServer(t).URL
+		cfg.Satellites["wind-predictor"] = satellite
+		manager, recorder := readManager(t, cfg)
+
+		if err := manager.Handle(sdk.Transmission{
+			Trigger: "config",
+			Text:    "config export wind-predictor",
+			Sender:  userPhone,
+		}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+		want := strings.Join([]string{
+			"!wind config set display_name Alice",
+			"!wind config set alert_schedule.nightly_local 22:00",
+		}, "\n")
+		if got := recorder.last(t); got != want {
+			t.Fatalf("export =\n%s\nwant:\n%s", got, want)
+		}
+	})
+
+	t.Run("group reads are ignored", func(t *testing.T) {
+		_, cfg, _ := newTestConfig(t)
+		satellite := cfg.Satellites["wind-predictor"]
+		satellite.Endpoint = newServer(t).URL
+		cfg.Satellites["wind-predictor"] = satellite
+		manager, _ := readManager(t, cfg)
+
+		err := manager.Handle(sdk.Transmission{
+			Trigger: "config",
+			Text:    "config list wind-predictor",
+			Sender:  userPhone,
+			GroupID: "group.example",
+		})
+		if !errors.Is(err, sdk.ErrIgnored) {
+			t.Fatalf("error = %v, want ErrIgnored", err)
+		}
+	})
+
+	t.Run("non-admin is forbidden", func(t *testing.T) {
+		_, cfg, _ := newTestConfig(t)
+		satellite := cfg.Satellites["wind-predictor"]
+		satellite.Endpoint = newServer(t).URL
+		cfg.Satellites["wind-predictor"] = satellite
+		manager, _ := readManager(t, cfg)
+
+		err := manager.Handle(sdk.Transmission{
+			Trigger: "config",
+			Text:    "config list wind-predictor",
+			Sender:  userPhone,
+		})
+		requireStatus(t, err, http.StatusForbidden)
 	})
 }
 

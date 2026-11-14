@@ -119,6 +119,32 @@ func (r *Router) Dispatch(ctx context.Context, in model.Inbound) {
 		return
 	}
 
+	// "aether <command>" is the pseudo-satellite prefix for Aether's built-ins,
+	// so built-ins can be addressed the same way as any other satellite. It is
+	// recognized on the raw text because "Aether " is also a persona prefix and
+	// would otherwise be stripped before the satellite check.
+	if rest, ok := aetherScopedText(rawText, systemPrefixes, user.Prefixes); ok {
+		if rest == "" {
+			rest = "help"
+		}
+		if builtin, ok := r.resolveBuiltin(rest); ok {
+			r.dispatchBuiltin(ctx, in, builtin, rest)
+			return
+		}
+		r.record(ctx, store.RouteLog{
+			Direction: "inbound",
+			MessageID: in.MessageID,
+			Sender:    in.Sender,
+			Text:      rest,
+			Status:    "dropped",
+			Error:     "unknown trigger",
+		})
+		if prefixed {
+			r.replyUser(ctx, in, unknownCommandReply(prefix, "aether"))
+		}
+		return
+	}
+
 	// An explicit "<satellite> <command>" prefix selects one satellite. The
 	// prefix is optional when the command is unambiguous; see triggerRoutes
 	// below for the conflict check.
@@ -229,6 +255,35 @@ func (r *Router) resolveBuiltin(text string) (Builtin, bool) {
 		}
 	}
 	return Builtin{}, false
+}
+
+// stripAetherScope recognizes a leading "aether" token, the pseudo-satellite
+// prefix for built-in commands. It returns the remainder and reports whether
+// the prefix was present.
+func stripAetherScope(text string) (string, bool) {
+	fields := strings.Fields(text)
+	if len(fields) == 0 || !strings.EqualFold(fields[0], "aether") {
+		return "", false
+	}
+	return strings.TrimSpace(strings.Join(fields[1:], " ")), true
+}
+
+// aetherScopedText strips ordinary prefixes while leaving the "aether"
+// pseudo-prefix in place, then parses it. This keeps "aether <command>" a
+// strict built-in scope even when "Aether " is configured as a persona prefix.
+func aetherScopedText(rawText string, groups ...[]string) (string, bool) {
+	filtered := make([][]string, 0, len(groups))
+	for _, prefixes := range groups {
+		kept := make([]string, 0, len(prefixes))
+		for _, prefix := range prefixes {
+			if strings.EqualFold(strings.TrimSpace(prefix), "aether") {
+				continue
+			}
+			kept = append(kept, prefix)
+		}
+		filtered = append(filtered, kept)
+	}
+	return stripAetherScope(stripPrefixes(rawText, filtered...))
 }
 
 // satelliteScope is an explicit "<satellite> <command>" prefix. key is the
@@ -384,8 +439,8 @@ func (r *Router) dispatchScoped(ctx context.Context, cfg *config.Config, in mode
 				Error:     "unsupported scoped config",
 			})
 			r.replyUser(ctx, in, fmt.Sprintf(
-				`Use %q to change a %s setting.`,
-				prefix+scope.scopeName()+" config set <key> <value>", scope.name))
+				`Use "%s config list", "%s config get <key>", "%s config export", or "%s config set <key> <value>".`,
+				prefix+scope.scopeName(), prefix+scope.scopeName(), prefix+scope.scopeName(), prefix+scope.scopeName()))
 			return true
 		}
 		if builtin, ok := r.resolveBuiltin("config"); ok {
@@ -424,11 +479,33 @@ func (r *Router) dispatchScoped(ctx context.Context, cfg *config.Config, in mode
 	return false
 }
 
-// scopedConfigText rewrites "wind-predictor config set <key> <value>" into the
-// canonical config-manager form "config set wind-predictor.<key> <value>". The
-// scoped form only changes satellite-owned settings; reads stay Aether-level.
+// scopedConfigText rewrites "wind config ..." into the canonical
+// config-manager form. Reads target the satellite's own settings:
+//
+//	wind config list              -> config list wind-predictor
+//	wind config get <key>         -> config get wind-predictor.<key>
+//	wind config export            -> config export wind-predictor
+//	wind config set <key> <value> -> config set wind-predictor.<key> <value>
+//
+// The unprefixed config command remains Aether-level.
 func scopedConfigText(scope satelliteScope, fields []string) (string, bool) {
-	if len(fields) == 0 || !strings.EqualFold(fields[0], "set") {
+	if len(fields) == 0 {
+		return "", false
+	}
+
+	switch strings.ToLower(fields[0]) {
+	case "list", "export":
+		if len(fields) != 1 {
+			return "", false
+		}
+		return "config " + strings.ToLower(fields[0]) + " " + scope.key, true
+	case "get":
+		if len(fields) != 2 {
+			return "", false
+		}
+		return "config get " + scope.key + "." + fields[1], true
+	case "set":
+	default:
 		return "", false
 	}
 

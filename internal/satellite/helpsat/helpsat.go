@@ -36,11 +36,9 @@ type Entry struct {
 	// Name is the satellite or built-in name used for alias resolution.
 	Name string
 	// Group is the satellite heading this entry is listed under. Built-ins
-	// use "Aether"; satellite entries use the satellite's canonical name.
+	// use "Aether"; satellite entries use the satellite's short prefix when
+	// one is configured, otherwise the canonical name.
 	Group string
-	// Prefix is the satellite's optional short routing prefix, for example
-	// "wind". It is empty for built-ins and for satellites without one.
-	Prefix string
 	// Trigger is the canonical first token.
 	Trigger string
 	// Usage is the one-line usage shown in detail view.
@@ -158,34 +156,47 @@ func (m *Manager) entries(cfg *config.Config, sender string, role auth.Role) []E
 			names = append(names, name)
 		}
 		sort.Strings(names)
-		// Satellite config is a per-satellite command, so remember each
-		// satellite's short prefix and add one config entry per group below.
-		groupPrefixes := make(map[string]string)
+
+		// A satellite's short prefix is its heading. Sibling files that share
+		// a canonical name share the same heading, so a satellite split across
+		// several files is listed once.
+		displayGroups := make(map[string]string)
+		for _, name := range names {
+			satellite := cfg.Satellites[name]
+			canonical := strings.TrimSpace(satellite.Name)
+			if canonical == "" {
+				canonical = name
+			}
+			if _, ok := displayGroups[canonical]; !ok {
+				displayGroups[canonical] = canonical
+			}
+			if prefix := strings.TrimSpace(satellite.Prefix); prefix != "" {
+				displayGroups[canonical] = prefix
+			}
+		}
+
 		for _, name := range names {
 			satellite := cfg.Satellites[name]
 			trigger := strings.TrimSpace(satellite.Trigger)
 			if trigger == "" {
 				continue
 			}
+			canonical := strings.TrimSpace(satellite.Name)
+			if canonical == "" {
+				canonical = name
+			}
 			entry := Entry{
-				Name:        satellite.Name,
-				Group:       satellite.Name,
-				Prefix:      strings.TrimSpace(satellite.Prefix),
+				Name:        canonical,
+				Group:       displayGroups[canonical],
 				Trigger:     trigger,
 				Usage:       trigger,
 				Description: strings.TrimSpace(satellite.Description),
 			}
-			if entry.Name == "" {
-				entry.Name = name
-			}
 			if entry.Group == "" {
-				entry.Group = entry.Name
+				entry.Group = canonical
 			}
 			if entry.Description == "" {
 				entry.Description = "Satellite command"
-			}
-			if _, ok := groupPrefixes[entry.Group]; !ok || groupPrefixes[entry.Group] == "" {
-				groupPrefixes[entry.Group] = entry.Prefix
 			}
 			for _, command := range satellite.Commands {
 				for _, pattern := range command.Patterns {
@@ -201,23 +212,36 @@ func (m *Manager) entries(cfg *config.Config, sender string, role auth.Role) []E
 		// command. It is admin-only and private-chat-only, so it only appears
 		// for callers who can use it.
 		if role >= auth.Admin {
-			groups := make([]string, 0, len(groupPrefixes))
-			for group := range groupPrefixes {
-				groups = append(groups, group)
+			type groupInfo struct {
+				name  string
+				group string
 			}
-			sort.Strings(groups)
+			seen := make(map[string]bool)
+			var groups []groupInfo
+			for _, name := range names {
+				satellite := cfg.Satellites[name]
+				canonical := strings.TrimSpace(satellite.Name)
+				if canonical == "" {
+					canonical = name
+				}
+				if seen[canonical] {
+					continue
+				}
+				seen[canonical] = true
+				groups = append(groups, groupInfo{name: canonical, group: displayGroups[canonical]})
+			}
+			sort.Slice(groups, func(i, j int) bool { return groups[i].group < groups[j].group })
 			for _, group := range groups {
 				out = append(out, Entry{
-					Name:        group,
-					Group:       group,
-					Prefix:      groupPrefixes[group],
+					Name:        group.name,
+					Group:       group.group,
 					Trigger:     "config",
-					Usage:       "config set <key> <value>",
-					Patterns:    []string{"config set <key> <value>"},
-					Description: "Change " + group + " settings",
+					Usage:       "config list|get|export|set",
+					Patterns:    []string{"config list", "config get <key>", "config export", "config set <key> <value>"},
+					Description: "View or change " + group.group + " settings",
 					Role:        auth.Admin,
 					Details: []string{
-						"Satellite settings require a private chat.",
+						"Satellite config reads and changes require a private chat.",
 						"Unprefixed config changes Aether settings instead.",
 					},
 				})
@@ -380,21 +404,17 @@ func renderGroup(entries []Entry, group, prefix string) string {
 }
 
 // writeEntry prints one command. Satellite entries print each configured
-// pattern so a satellite that owns several commands is fully represented. A
-// satellite with a short prefix is shown with that prefix, because prefixed
-// commands are the unambiguous form.
+// pattern so a satellite that owns several commands is fully represented. The
+// satellite heading already names the satellite, so the pattern itself is
+// shown without a satellite prefix.
 func writeEntry(b *strings.Builder, entry Entry, prefix string) {
-	commandPrefix := prefix
-	if entry.Prefix != "" {
-		commandPrefix += entry.Prefix + " "
-	}
 	if len(entry.Patterns) > 0 {
 		for _, pattern := range entry.Patterns {
-			fmt.Fprintf(b, "  *%s%s*\n", commandPrefix, pattern)
+			fmt.Fprintf(b, "  *%s%s*\n", prefix, pattern)
 		}
 		return
 	}
-	fmt.Fprintf(b, "  *%s%s*", commandPrefix, entry.Usage)
+	fmt.Fprintf(b, "  *%s%s*", prefix, entry.Usage)
 	if entry.Description != "" {
 		fmt.Fprintf(b, " — %s", entry.Description)
 	}
@@ -416,7 +436,7 @@ func groups(entries []Entry) []string {
 }
 
 // groupForTopic resolves "help <satellite>" to the group heading. The
-// satellite's short prefix is accepted as well.
+// satellite's short prefix and canonical name are both accepted.
 func groupForTopic(entries []Entry, topic string) string {
 	topic = strings.TrimSpace(topic)
 	if topic == "" {
@@ -426,8 +446,13 @@ func groupForTopic(entries []Entry, topic string) string {
 		if entry.Group == "" {
 			continue
 		}
-		if strings.EqualFold(entry.Group, topic) ||
-			(entry.Prefix != "" && strings.EqualFold(entry.Prefix, topic)) {
+		if strings.EqualFold(entry.Group, topic) {
+			return entry.Group
+		}
+		// A satellite's canonical name resolves to its heading, which may be
+		// the short prefix. Built-in names are command triggers, not groups.
+		if !strings.EqualFold(entry.Group, "Aether") &&
+			entry.Name != "" && strings.EqualFold(entry.Name, topic) {
 			return entry.Group
 		}
 	}
@@ -437,17 +462,13 @@ func groupForTopic(entries []Entry, topic string) string {
 // renderDetail expands one command, including usage, description, and any
 // satellite patterns or aliases.
 func renderDetail(entry Entry, prefix string) string {
-	commandPrefix := prefix
-	if entry.Prefix != "" {
-		commandPrefix += entry.Prefix + " "
-	}
 	var b strings.Builder
 	if len(entry.Patterns) > 0 {
 		for _, pattern := range entry.Patterns {
-			fmt.Fprintf(&b, "*%s%s*\n", commandPrefix, pattern)
+			fmt.Fprintf(&b, "*%s%s*\n", prefix, pattern)
 		}
 	} else {
-		fmt.Fprintf(&b, "*%s%s*\n", commandPrefix, entry.Usage)
+		fmt.Fprintf(&b, "*%s%s*\n", prefix, entry.Usage)
 	}
 	if entry.Description != "" {
 		b.WriteString(entry.Description)

@@ -74,23 +74,36 @@ persona prefixes for that user; commands are then typed bare, for example
 `config list`.
 
 Unprefixed `!config` always means Aether's own settings. Satellite-owned
-settings use the satellite's prefix:
+settings use the satellite's prefix and mirror the same list/get/export/set
+feel:
 
 ```
+!wind config list
+!wind config get alert_schedule.nightly_local
+!wind config export
 !wind config set alert_schedule.nightly_local 21:45
 ```
 
 A satellite can declare a short `prefix` in its JSON file, such as `"wind"` for
-`wind-predictor`. The canonical name and file key still work, so both
-`!wind config set ...` and `!wind-predictor config set ...` are accepted.
+`wind-predictor`. The canonical name and file key still work, so
+`!wind config set ...`, `!wind-predictor config set ...`, and
+`!wind-predictor config list` are all accepted.
 
 Satellite triggers accept the same prefix, for example `!wind fly FPS` or
 `!wind glider status`. The prefix is optional when the trigger is unique; if two
 satellites share a trigger, Aether replies with the prefixed forms to use.
-`!help` lists every command under its satellite, and admins also see each
-satellite's config command. `!help wind` or `!help wind-predictor` lists one
-satellite. Satellite config forwarding is admin-only and must originate in a
-private chat; groups ignore it silently.
+
+Aether's own built-ins can be addressed like a satellite too: `!aether config
+list`, `!aether help wind`, or just `!aether` for help. After the `aether`
+prefix only built-ins resolve, so a satellite trigger such as `!aether fly FPS`
+is rejected instead of silently reaching the satellite.
+
+`!help` lists every command under its satellite heading, using the short prefix
+when configured (`wind`) and the canonical name otherwise. Commands are shown
+indented without repeating the heading. Admins also see each satellite's config
+command. `!help wind` or `!help wind-predictor` lists one satellite. Satellite
+config reads and writes are admin-only and must originate in a private chat;
+groups ignore them silently.
 
 Command names, subcommands, satellite triggers, aliases, and prefixes are
 case-insensitive, so a phone that autocapitalizes the first word still works

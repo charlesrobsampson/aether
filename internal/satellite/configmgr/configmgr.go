@@ -39,6 +39,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -361,28 +362,63 @@ func splitSatelliteTarget(cfg *config.Config, target string) (name, key string, 
 	return key, target[dot+1:], true
 }
 
-// findSatelliteKey resolves a file key or canonical satellite name to the file
-// key. Config forwarding needs the key because that is how cfg.Satellites and
-// the sender's satellite_ids mapping are indexed.
+// findSatelliteKey resolves a file key, canonical satellite name, or short
+// prefix to the file key. Config forwarding needs the key because that is how
+// cfg.Satellites and the sender's satellite_ids mapping are indexed. When
+// several files share a satellite, the file whose key equals the canonical
+// name is preferred.
 func findSatelliteKey(cfg *config.Config, name string) (string, bool) {
-	if cfg == nil {
+	if cfg == nil || strings.TrimSpace(name) == "" {
 		return "", false
 	}
 	if _, ok := cfg.Satellites[name]; ok {
 		return name, true
 	}
 
-	var nameMatch string
-	for key, satellite := range cfg.Satellites {
+	keys := make([]string, 0, len(cfg.Satellites))
+	for key := range cfg.Satellites {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
 		if strings.EqualFold(key, name) {
 			return key, true
 		}
-		if nameMatch == "" && strings.EqualFold(strings.TrimSpace(satellite.Name), name) {
+	}
+
+	var nameMatch string
+	for _, key := range keys {
+		satellite := cfg.Satellites[key]
+		if !strings.EqualFold(strings.TrimSpace(satellite.Name), name) {
+			continue
+		}
+		if strings.EqualFold(key, strings.TrimSpace(satellite.Name)) {
+			return key, true
+		}
+		if nameMatch == "" {
 			nameMatch = key
 		}
 	}
 	if nameMatch != "" {
 		return nameMatch, true
+	}
+
+	var prefixMatch string
+	for _, key := range keys {
+		satellite := cfg.Satellites[key]
+		if !strings.EqualFold(strings.TrimSpace(satellite.Prefix), name) {
+			continue
+		}
+		if strings.EqualFold(key, strings.TrimSpace(satellite.Name)) {
+			return key, true
+		}
+		if prefixMatch == "" {
+			prefixMatch = key
+		}
+	}
+	if prefixMatch != "" {
+		return prefixMatch, true
 	}
 	return "", false
 }
