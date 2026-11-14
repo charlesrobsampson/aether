@@ -42,6 +42,7 @@ func newScopedFixture(t *testing.T) *scopedFixture {
 			t.Errorf("decode envelope: %v", err)
 			return
 		}
+		envelope.Path = r.URL.Path
 		f.mu.Lock()
 		f.calls = append(f.calls, envelope)
 		f.mu.Unlock()
@@ -67,13 +68,27 @@ func newScopedFixture(t *testing.T) *scopedFixture {
 		Trigger:     "glider",
 		Endpoint:    f.server.URL,
 		Prefix:      "wind",
-		Description: "Check the glider",
-		Commands: []config.CommandConfig{{
-			Name:     "glider_action",
-			Path:     "/glider",
-			Patterns: []string{"glider <action>"},
-			Args:     []config.ArgDef{{Name: "action", Type: "string"}},
-		}},
+		Description: "Check or update whether the glider is loaded",
+		Commands: []config.CommandConfig{
+			{
+				Name:        "glider_status",
+				Path:        "/glider/status",
+				Patterns:    []string{"glider", "glider status"},
+				Description: "Check whether the glider is loaded",
+			},
+			{
+				Name:        "glider_loaded",
+				Path:        "/glider/loaded",
+				Patterns:    []string{"glider loaded"},
+				Description: "Mark the glider loaded",
+			},
+			{
+				Name:        "glider_unloaded",
+				Path:        "/glider/unloaded",
+				Patterns:    []string{"glider not loaded", "glider unloaded"},
+				Description: "Mark the glider not loaded",
+			},
+		},
 	})
 	testutil.WriteJSON(t, filepath.Join(f.root, "satellites", "loaded.json"), config.SatelliteConfig{
 		Name:        "wind-predictor",
@@ -82,10 +97,10 @@ func newScopedFixture(t *testing.T) *scopedFixture {
 		Prefix:      "wind",
 		Description: "Mark the glider loaded",
 		Commands: []config.CommandConfig{{
-			Name:     "glider_loaded",
-			Path:     "/loaded",
-			Patterns: []string{"loaded <rest>"},
-			Args:     []config.ArgDef{{Name: "rest", Type: "string"}},
+			Name:        "glider_loaded",
+			Path:        "/loaded",
+			Patterns:    []string{"loaded"},
+			Description: "Mark the glider loaded",
 		}},
 	})
 
@@ -216,9 +231,41 @@ func TestScopedSatelliteCommands(t *testing.T) {
 	})
 
 	t.Run("short prefix selects a sibling file", func(t *testing.T) {
-		f.dispatch(t, "!wind loaded the glider")
+		f.dispatch(t, "!wind loaded")
 		call := f.lastCall(t)
-		if call.Trigger != "loaded" || call.Text != "loaded the glider" {
+		if call.Trigger != "loaded" || call.Text != "loaded" || call.Path != "/loaded" {
+			t.Fatalf("envelope = %+v", call)
+		}
+	})
+
+	t.Run("glider status uses the status path", func(t *testing.T) {
+		f.dispatch(t, "!wind glider status")
+		call := f.lastCall(t)
+		if call.Trigger != "glider" || call.Text != "glider status" || call.Path != "/glider/status" {
+			t.Fatalf("envelope = %+v", call)
+		}
+	})
+
+	t.Run("bare glider also uses the status path", func(t *testing.T) {
+		f.dispatch(t, "!wind glider")
+		call := f.lastCall(t)
+		if call.Trigger != "glider" || call.Text != "glider" || call.Path != "/glider/status" {
+			t.Fatalf("envelope = %+v", call)
+		}
+	})
+
+	t.Run("glider loaded uses the loaded path", func(t *testing.T) {
+		f.dispatch(t, "!wind glider loaded")
+		call := f.lastCall(t)
+		if call.Trigger != "glider" || call.Text != "glider loaded" || call.Path != "/glider/loaded" {
+			t.Fatalf("envelope = %+v", call)
+		}
+	})
+
+	t.Run("glider not loaded uses the unloaded path", func(t *testing.T) {
+		f.dispatch(t, "!wind glider not loaded")
+		call := f.lastCall(t)
+		if call.Trigger != "glider" || call.Text != "glider not loaded" || call.Path != "/glider/unloaded" {
 			t.Fatalf("envelope = %+v", call)
 		}
 	})
@@ -252,9 +299,9 @@ func TestScopedSatelliteCommands(t *testing.T) {
 	})
 
 	t.Run("satellite prefix selects a sibling file", func(t *testing.T) {
-		f.dispatch(t, "!wind-predictor loaded the glider")
+		f.dispatch(t, "!wind-predictor loaded")
 		call := f.lastCall(t)
-		if call.Trigger != "loaded" || call.Text != "loaded the glider" {
+		if call.Trigger != "loaded" || call.Text != "loaded" || call.Path != "/loaded" {
 			t.Fatalf("envelope = %+v", call)
 		}
 	})

@@ -100,10 +100,10 @@ is rejected instead of silently reaching the satellite.
 
 `!help` lists every command under its satellite heading, using the short prefix
 when configured (`wind`) and the canonical name otherwise. Commands are shown
-indented without repeating the heading. Admins also see each satellite's config
-command. `!help wind` or `!help wind-predictor` lists one satellite. Satellite
-config reads and writes are admin-only and must originate in a private chat;
-groups ignore them silently.
+indented with a short description and without repeating the heading. Admins also
+see each satellite's config command. `!help wind` or `!help wind-predictor`
+lists one satellite. Satellite config reads and writes are admin-only and must
+originate in a private chat; groups ignore them silently.
 
 Command names, subcommands, satellite triggers, aliases, and prefixes are
 case-insensitive, so a phone that autocapitalizes the first word still works

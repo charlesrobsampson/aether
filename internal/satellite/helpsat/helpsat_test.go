@@ -35,6 +35,18 @@ func (s *recordingSender) last(t *testing.T) string {
 	return s.responses[0].Text
 }
 
+// latest returns the most recent response. Use it when a test deliberately
+// sends more than one help request.
+func (s *recordingSender) latest(t *testing.T) string {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.responses) == 0 {
+		t.Fatal("no responses")
+	}
+	return s.responses[len(s.responses)-1].Text
+}
+
 func testManager(t *testing.T, role auth.Role) (*Manager, *recordingSender) {
 	t.Helper()
 
@@ -260,6 +272,45 @@ func TestHelpGroupsCommandsBySatellite(t *testing.T) {
 	}
 	if strings.Contains(underWeather, "wx fly") || strings.Contains(underWeather, "wx glide") {
 		t.Fatalf("satellite prefix repeated on every command:\n%s", got)
+	}
+}
+
+func TestHelpListsCommandDescriptions(t *testing.T) {
+	manager, sender := testManager(t, auth.User)
+	cfg := manager.configSnapshot()
+	cfg.Satellites["glider"] = config.SatelliteConfig{
+		Name:        "weather",
+		Trigger:     "glider",
+		Prefix:      "wx",
+		Description: "Glider commands",
+		Commands: []config.CommandConfig{
+			{Name: "status", Patterns: []string{"glider", "glider status"}, Description: "Check the glider"},
+			{Name: "loaded", Patterns: []string{"glider loaded"}, Description: "Mark the glider loaded"},
+		},
+	}
+
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help"}); err != nil {
+		t.Fatalf("HandleHelp: %v", err)
+	}
+	got := sender.last(t)
+	for _, want := range []string{
+		"*!glider*, *!glider status* — Check the glider",
+		"*!glider loaded* — Mark the glider loaded",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("help lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "glider <action>") {
+		t.Fatalf("help still shows an opaque action placeholder:\n%s", got)
+	}
+
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help glider loaded"}); err != nil {
+		t.Fatalf("HandleHelp detail: %v", err)
+	}
+	detail := sender.latest(t)
+	if !strings.Contains(detail, "*!glider loaded*") || !strings.Contains(detail, "Mark the glider loaded") {
+		t.Fatalf("detail lacks the explicit command:\n%s", detail)
 	}
 }
 

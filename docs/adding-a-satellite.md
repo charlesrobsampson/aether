@@ -26,6 +26,7 @@ SQLite, and rebuilding `routes.json`.
       "name": "fly",
       "path": "/api/v1/predict/text",
       "patterns": ["fly <station>"],
+      "description": "Forecast for a station using your default profile",
       "args": [
         { "name": "station", "type": "string" }
       ]
@@ -46,6 +47,10 @@ Rules enforced by registration:
 - `endpoint` is an absolute `http` or `https` URL.
 - Every command has a non-empty name, at least one pattern, and a path that
   starts with `/`.
+- `description`, when present, is shown next to that command in `help`. Without
+  it, help falls back to the satellite-level description. Declare one command
+  per action so help can name each action explicitly instead of showing an
+  opaque `<action>` placeholder.
 
 `routes.json` is regenerated from all satellite files after every registration.
 Never edit it by hand.

@@ -113,10 +113,11 @@ type SatelliteConfig struct {
 }
 
 type CommandConfig struct {
-	Name     string   `json:"name"`
-	Path     string   `json:"path"`
-	Patterns []string `json:"patterns"`
-	Args     []ArgDef `json:"args,omitempty"`
+	Name        string   `json:"name"`
+	Path        string   `json:"path"`
+	Patterns    []string `json:"patterns"`
+	Description string   `json:"description,omitempty"`
+	Args        []ArgDef `json:"args,omitempty"`
 }
 
 type ArgDef struct {

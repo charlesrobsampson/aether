@@ -34,6 +34,9 @@ type dispatchEnvelope struct {
 	GroupID    string                     `json:"group_id"`
 	GroupName  string                     `json:"group_name"`
 	MentionsMe bool                       `json:"mentions_me"`
+	// Path is the request path the test server received. It is not part of the
+	// webhook envelope; scoped tests record it to prove which command matched.
+	Path string `json:"-"`
 }
 
 type dispatchCall struct {

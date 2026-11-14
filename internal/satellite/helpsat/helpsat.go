@@ -185,27 +185,60 @@ func (m *Manager) entries(cfg *config.Config, sender string, role auth.Role) []E
 			if canonical == "" {
 				canonical = name
 			}
-			entry := Entry{
-				Name:        canonical,
-				Group:       displayGroups[canonical],
-				Trigger:     trigger,
-				Usage:       trigger,
-				Description: strings.TrimSpace(satellite.Description),
+			group := displayGroups[canonical]
+			if group == "" {
+				group = canonical
 			}
-			if entry.Group == "" {
-				entry.Group = canonical
+			satelliteDescription := strings.TrimSpace(satellite.Description)
+
+			// One entry per command keeps help explicit: each action gets its
+			// own patterns and description instead of one opaque
+			// "<action>" placeholder.
+			if len(satellite.Commands) == 0 {
+				entry := Entry{
+					Name:        canonical,
+					Group:       group,
+					Trigger:     trigger,
+					Usage:       trigger,
+					Description: satelliteDescription,
+				}
+				if entry.Description == "" {
+					entry.Description = "Satellite command"
+				}
+				out = append(out, entry)
+				continue
 			}
-			if entry.Description == "" {
-				entry.Description = "Satellite command"
-			}
+
 			for _, command := range satellite.Commands {
+				patterns := make([]string, 0, len(command.Patterns))
 				for _, pattern := range command.Patterns {
 					if pattern = strings.TrimSpace(pattern); pattern != "" {
-						entry.Patterns = append(entry.Patterns, pattern)
+						patterns = append(patterns, pattern)
 					}
 				}
+				if len(patterns) == 0 {
+					continue
+				}
+				commandTrigger := trigger
+				if fields := strings.Fields(patterns[0]); len(fields) > 0 {
+					commandTrigger = fields[0]
+				}
+				description := strings.TrimSpace(command.Description)
+				if description == "" {
+					description = satelliteDescription
+				}
+				if description == "" {
+					description = "Satellite command"
+				}
+				out = append(out, Entry{
+					Name:        canonical,
+					Group:       group,
+					Trigger:     commandTrigger,
+					Usage:       patterns[0],
+					Patterns:    patterns,
+					Description: description,
+				})
 			}
-			out = append(out, entry)
 		}
 
 		// Satellite settings are edited through the satellite's own config
@@ -340,6 +373,18 @@ func findEntry(entries []Entry, topic string) (Entry, bool) {
 			return entry, true
 		}
 	}
+	// A command may have several patterns, for example "glider" and
+	// "glider status". Let help resolve the full pattern too.
+	for _, entry := range entries {
+		if strings.ToLower(strings.TrimSpace(entry.Usage)) == topic {
+			return entry, true
+		}
+		for _, pattern := range entry.Patterns {
+			if strings.ToLower(strings.TrimSpace(pattern)) == topic {
+				return entry, true
+			}
+		}
+	}
 	return Entry{}, false
 }
 
@@ -403,15 +448,23 @@ func renderGroup(entries []Entry, group, prefix string) string {
 	return truncate(b.String())
 }
 
-// writeEntry prints one command. Satellite entries print each configured
-// pattern so a satellite that owns several commands is fully represented. The
-// satellite heading already names the satellite, so the pattern itself is
-// shown without a satellite prefix.
+// writeEntry prints one command. Satellite entries list their configured
+// patterns on one line so related spellings stay together, then the command's
+// description. The satellite heading already names the satellite, so patterns
+// are shown without a satellite prefix.
 func writeEntry(b *strings.Builder, entry Entry, prefix string) {
 	if len(entry.Patterns) > 0 {
-		for _, pattern := range entry.Patterns {
-			fmt.Fprintf(b, "  *%s%s*\n", prefix, pattern)
+		for i, pattern := range entry.Patterns {
+			if i == 0 {
+				fmt.Fprintf(b, "  *%s%s*", prefix, pattern)
+				continue
+			}
+			fmt.Fprintf(b, ", *%s%s*", prefix, pattern)
 		}
+		if entry.Description != "" {
+			fmt.Fprintf(b, " — %s", entry.Description)
+		}
+		b.WriteString("\n")
 		return
 	}
 	fmt.Fprintf(b, "  *%s%s*", prefix, entry.Usage)
