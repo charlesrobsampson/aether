@@ -93,6 +93,12 @@ Satellite triggers accept the same prefix, for example `!wind fly FPS` or
 `!wind glider status`. The prefix is optional when the trigger is unique; if two
 satellites share a trigger, Aether replies with the prefixed forms to use.
 
+Satellites can also expose domain commands beyond config. For example,
+`wind-predictor` provides `!wind stations`, `!wind profiles`,
+`!wind profile <id>`, and `!wind profile set <id> <key> <value>`. Aether
+enforces sender and group approval, while the satellite decides who may read or
+change its own data.
+
 Aether's own built-ins can be addressed like a satellite too: `!aether config
 list`, `!aether help wind`, or just `!aether` for help. After the `aether`
 prefix only built-ins resolve, so a satellite trigger such as `!aether fly FPS`
