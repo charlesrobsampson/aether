@@ -410,6 +410,14 @@ func TestAetherPrefixSelectsBuiltins(t *testing.T) {
 		}
 	})
 
+	t.Run("prefixed help keeps per-word prefixes for the built-in", func(t *testing.T) {
+		f.dispatch(t, "!help !wind !fly")
+		satellite, text := f.builtin(t)
+		if satellite != "help" || text != "help !wind !fly" {
+			t.Fatalf("builtin = %q, text = %q", satellite, text)
+		}
+	})
+
 	t.Run("bare aether shows help", func(t *testing.T) {
 		f.dispatch(t, "!aether")
 		satellite, text := f.builtin(t)

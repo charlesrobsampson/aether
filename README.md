@@ -112,9 +112,14 @@ configured (`wind`) and the canonical name otherwise; commands are shown
 indented with a short description and without repeating the heading. When only
 one group exists, `!help` shows its commands directly. `!help wind` or
 `!help wind-predictor` lists one satellite, and `!help aether` lists the
-built-ins. Admins also see each satellite's config command. Satellite config
-reads and writes are admin-only and must originate in a private chat; groups
-ignore them silently.
+built-ins. `!help <satellite> <command>` expands one command inside that
+satellite; when only one satellite defines the command the satellite may be
+omitted, so `!help wind fly` and `!help fly` are equivalent. If several
+satellites share the command, help replies with the prefixed forms to use.
+When prefixes are required, each command word carries the prefix, so the
+explicit form is `!help !wind !fly`. Admins also see each satellite's config
+command. Satellite config reads and writes are admin-only and must originate in
+a private chat; groups ignore them silently.
 
 Command names, subcommands, satellite triggers, aliases, and prefixes are
 case-insensitive, so a phone that autocapitalizes the first word still works

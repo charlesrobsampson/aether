@@ -441,3 +441,99 @@ func TestHelpHidesSatelliteConfigFromUsers(t *testing.T) {
 		t.Fatalf("user help leaked the admin satellite config command:\n%s", got)
 	}
 }
+
+func TestHelpResolvesSatelliteFirstCommand(t *testing.T) {
+	manager, sender := testManager(t, auth.User)
+
+	for _, topic := range []string{"help fly", "help wx fly", "help weather fly"} {
+		if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: topic}); err != nil {
+			t.Fatalf("HandleHelp(%q): %v", topic, err)
+		}
+		got := sender.latest(t)
+		if !strings.Contains(got, "!fly <station>") || !strings.Contains(got, "Aviation weather") {
+			t.Errorf("help %q = %q, want the weather fly command", topic, got)
+		}
+	}
+}
+
+func TestHelpAcceptsPrefixOnEveryWord(t *testing.T) {
+	manager, sender := testManager(t, auth.User)
+
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help !wx !fly"}); err != nil {
+		t.Fatalf("HandleHelp: %v", err)
+	}
+	got := sender.latest(t)
+	if !strings.Contains(got, "!fly <station>") {
+		t.Fatalf("per-word prefix help = %q, want the weather fly command", got)
+	}
+}
+
+func TestHelpAmbiguousCommandNamesPrefixedForms(t *testing.T) {
+	manager, sender := testManager(t, auth.User)
+	cfg := manager.configSnapshot()
+	cfg.Satellites["wind"] = config.SatelliteConfig{
+		Name:        "wind-predictor",
+		Trigger:     "fly",
+		Prefix:      "wind",
+		Description: "Wind predictions",
+		Commands: []config.CommandConfig{{
+			Name:     "fly",
+			Patterns: []string{"fly <station>"},
+		}},
+	}
+
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help fly"}); err != nil {
+		t.Fatalf("HandleHelp: %v", err)
+	}
+	got := sender.latest(t)
+	for _, want := range []string{
+		`"fly" is available in wind and wx`,
+		`"!help !wind !fly"`,
+		`"!help !wx !fly"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("ambiguous help = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestHelpScopedCommandIsNotAmbiguous(t *testing.T) {
+	manager, sender := testManager(t, auth.User)
+	cfg := manager.configSnapshot()
+	cfg.Satellites["wind"] = config.SatelliteConfig{
+		Name:        "wind-predictor",
+		Trigger:     "fly",
+		Prefix:      "wind",
+		Description: "Wind predictions",
+		Commands: []config.CommandConfig{{
+			Name:     "fly",
+			Patterns: []string{"fly <station>"},
+		}},
+	}
+
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help wind fly"}); err != nil {
+		t.Fatalf("HandleHelp: %v", err)
+	}
+	if got := sender.latest(t); !strings.Contains(got, "Wind predictions") {
+		t.Fatalf("scoped help = %q, want the wind command", got)
+	}
+}
+
+func TestHelpNoPrefixUserUsesBareForms(t *testing.T) {
+	manager, sender := testManager(t, auth.User)
+	cfg := manager.configSnapshot()
+	user := cfg.Users[testSender]
+	user.Prefixes = []string{}
+	cfg.Users[testSender] = user
+
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help wx fly"}); err != nil {
+		t.Fatalf("HandleHelp: %v", err)
+	}
+	got := sender.latest(t)
+	if !strings.Contains(got, "fly <station>") {
+		t.Fatalf("bare help = %q, want the weather fly command", got)
+	}
+	if strings.Contains(got, "!fly") {
+		t.Fatalf("bare help still shows a prefix: %q", got)
+	}
+}

@@ -101,7 +101,7 @@ func (m *Manager) HandleHelp(t sdk.Transmission) error {
 	prefix := helpPrefix(cfg, actor)
 
 	entries := m.entries(cfg, actor, role)
-	topic := helpTopic(t)
+	topic := helpTopic(t, helpPrefixes(cfg, actor))
 
 	if topic == "" {
 		// With more than one group, list the available satellites instead of
@@ -112,20 +112,36 @@ func (m *Manager) HandleHelp(t sdk.Transmission) error {
 		}
 		return m.send(t, renderList(entries, prefix))
 	}
-	topic = resolveAlias(cfg, actor, topic)
-	if group := groupForTopic(entries, topic); group != "" {
-		return m.send(t, renderGroup(entries, group, prefix))
-	}
-	entry, ok := findEntry(entries, topic)
-	if !ok {
-		hint := fmt.Sprintf("No command %q. Send %q for the list.", topic, prefix+"help")
-		if suggestion := closestEntry(entries, topic); suggestion != "" {
-			hint = fmt.Sprintf("No command %q. Did you mean %q? Send %q for the list.",
-				topic, suggestion, prefix+"help")
+	topic = resolveTopicAliases(cfg, actor, topic)
+
+	// "help <satellite> <command>" scopes the lookup to one satellite, so a
+	// command shared by several satellites is still unambiguous. The satellite
+	// may be its short prefix or canonical name. "help <satellite>" lists the
+	// whole group.
+	if fields := strings.Fields(topic); len(fields) > 0 {
+		if group := groupForTopic(entries, fields[0]); group != "" {
+			rest := strings.TrimSpace(strings.Join(fields[1:], " "))
+			if rest == "" {
+				return m.send(t, renderGroup(entries, group, prefix))
+			}
+			scoped := groupEntries(entries, group)
+			if matches := matchEntries(scoped, rest); len(matches) > 0 {
+				return m.send(t, renderDetail(matches[0], prefix))
+			}
+			return m.send(t, unknownTopicReply(scoped, rest, prefix))
 		}
-		return m.send(t, hint)
 	}
-	return m.send(t, renderDetail(entry, prefix))
+
+	// A bare command resolves only when exactly one satellite defines it. When
+	// several do, name the prefixed forms that disambiguate it.
+	matches := matchEntries(entries, topic)
+	switch {
+	case len(matches) == 0:
+		return m.send(t, unknownTopicReply(entries, topic, prefix))
+	case len(distinctGroups(matches)) > 1:
+		return m.send(t, ambiguousTopicReply(distinctGroups(matches), topic, prefix))
+	}
+	return m.send(t, renderDetail(matches[0], prefix))
 }
 
 func (m *Manager) configSnapshot() *config.Config {
@@ -373,27 +389,101 @@ func aliasFold(values map[string]string, key string) string {
 	return ""
 }
 
-// findEntry resolves a canonical trigger, satellite name, or configured alias.
-func findEntry(entries []Entry, topic string) (Entry, bool) {
+// matchEntries returns every entry a topic names. A topic may be a trigger, a
+// usage, or a full configured pattern, so "glider", "glider status", and
+// "fly <station>" all resolve.
+func matchEntries(entries []Entry, topic string) []Entry {
 	topic = strings.ToLower(strings.TrimSpace(topic))
+	if topic == "" {
+		return nil
+	}
+	var out []Entry
 	for _, entry := range entries {
-		if strings.ToLower(entry.Trigger) == topic || strings.ToLower(entry.Name) == topic {
-			return entry, true
+		if entryMatches(entry, topic) {
+			out = append(out, entry)
 		}
 	}
-	// A command may have several patterns, for example "glider" and
-	// "glider status". Let help resolve the full pattern too.
-	for _, entry := range entries {
-		if strings.ToLower(strings.TrimSpace(entry.Usage)) == topic {
-			return entry, true
-		}
-		for _, pattern := range entry.Patterns {
-			if strings.ToLower(strings.TrimSpace(pattern)) == topic {
-				return entry, true
-			}
+	return out
+}
+
+func entryMatches(entry Entry, topic string) bool {
+	if strings.ToLower(entry.Trigger) == topic {
+		return true
+	}
+	if strings.ToLower(strings.TrimSpace(entry.Usage)) == topic {
+		return true
+	}
+	for _, pattern := range entry.Patterns {
+		if strings.ToLower(strings.TrimSpace(pattern)) == topic {
+			return true
 		}
 	}
-	return Entry{}, false
+	return false
+}
+
+// groupEntries keeps only the entries belonging to one satellite heading.
+func groupEntries(entries []Entry, group string) []Entry {
+	out := make([]Entry, 0, len(entries))
+	for _, entry := range entries {
+		if strings.EqualFold(entry.Group, group) {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+// distinctGroups lists the headings a set of matches spans, sorted. Two
+// matches in the same satellite are pattern variants, not an ambiguity.
+func distinctGroups(entries []Entry) []string {
+	seen := make(map[string]bool, len(entries))
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		group := entry.Group
+		if group == "" {
+			group = "Aether"
+		}
+		if !seen[group] {
+			seen[group] = true
+			out = append(out, group)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// unknownTopicReply reports a miss and, when possible, the closest command.
+func unknownTopicReply(entries []Entry, topic, prefix string) string {
+	hint := fmt.Sprintf("No command %q. Send %q for the list.", topic, prefix+"help")
+	if suggestion := closestEntry(entries, topic); suggestion != "" {
+		hint = fmt.Sprintf("No command %q. Did you mean %q? Send %q for the list.",
+			topic, suggestion, prefix+"help")
+	}
+	return hint
+}
+
+// ambiguousTopicReply names the prefixed forms that resolve a command shared by
+// several satellites.
+func ambiguousTopicReply(groups []string, topic, prefix string) string {
+	options := make([]string, 0, len(groups))
+	for _, group := range groups {
+		options = append(options, fmt.Sprintf("%q", helpInvocation(prefix, "help", group, topic)))
+	}
+	return fmt.Sprintf("%q is available in %s. Send %s.",
+		topic, strings.Join(groups, " and "), strings.Join(options, " or "))
+}
+
+// helpInvocation joins command words with the sender's prefix. With a prefix,
+// every word carries it ("!help !wind !fly"); with none, the words are bare
+// ("help wind fly"). Arguments are added by the caller, not here.
+func helpInvocation(prefix string, words ...string) string {
+	if prefix == "" {
+		return strings.Join(words, " ")
+	}
+	parts := make([]string, 0, len(words))
+	for _, word := range words {
+		parts = append(parts, prefix+word)
+	}
+	return strings.Join(parts, " ")
 }
 
 // closestEntry suggests an entry whose trigger starts with the same letters.
@@ -408,8 +498,20 @@ func closestEntry(entries []Entry, topic string) string {
 	return ""
 }
 
-// helpTopic removes the trigger word and returns the remaining argument.
-func helpTopic(t sdk.Transmission) string {
+// resolveTopicAliases resolves each word through the sender's aliases, so
+// "help w f" works when w and f are satellite and command aliases.
+func resolveTopicAliases(cfg *config.Config, sender, topic string) string {
+	fields := strings.Fields(topic)
+	for i, field := range fields {
+		fields[i] = resolveAlias(cfg, sender, field)
+	}
+	return strings.Join(fields, " ")
+}
+
+// helpTopic removes the trigger word and returns the remaining words with any
+// configured prefix stripped from each. That makes "!help !wind !fly" and
+// "help wind fly" the same request.
+func helpTopic(t sdk.Transmission, prefixes []string) string {
 	fields := strings.Fields(t.Text)
 	if len(fields) == 0 {
 		return ""
@@ -420,7 +522,31 @@ func helpTopic(t sdk.Transmission) string {
 	default:
 		return ""
 	}
+	for i := range fields {
+		fields[i] = stripTokenPrefixes(fields[i], prefixes)
+	}
 	return strings.TrimSpace(strings.Join(fields, " "))
+}
+
+// stripTokenPrefixes removes configured prefixes from the front of one word.
+// It is repeated so "!!wind" behaves like "!wind".
+func stripTokenPrefixes(word string, prefixes []string) string {
+	for {
+		stripped := false
+		for _, prefix := range prefixes {
+			if prefix == "" || len(word) < len(prefix) {
+				continue
+			}
+			if strings.EqualFold(word[:len(prefix)], prefix) {
+				word = word[len(prefix):]
+				stripped = true
+				break
+			}
+		}
+		if !stripped {
+			return word
+		}
+	}
 }
 
 // renderSummary is the compact default view when more than one group is
@@ -609,6 +735,18 @@ func helpPrefix(cfg *config.Config, actor string) string {
 		}
 	}
 	return "!"
+}
+
+// helpPrefixes returns the prefix list that applies to actor. An explicitly
+// empty user list means commands are typed bare, so nothing is stripped.
+func helpPrefixes(cfg *config.Config, actor string) []string {
+	if cfg == nil {
+		return nil
+	}
+	if user, ok := cfg.Users[actor]; ok && user.Prefixes != nil {
+		return user.Prefixes
+	}
+	return cfg.System.Persona.Prefixes
 }
 
 // send emits one /message response to the originating sender.
