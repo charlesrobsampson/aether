@@ -206,11 +206,11 @@ user-scoped RFC6902 patch. `!wind config set ...` is equivalent to
 `!config` remains Aether-level, so a satellite config change always needs the
 prefix. Satellite triggers accept the same prefix (`!wind fly FPS`); it is
 optional when the trigger is unique. Aether's built-ins accept the same shape
-through `!aether <command>`; only built-ins resolve after that prefix. For
-admins, `!help` lists the satellite config command under the satellite heading,
-and `!help wind` lists that satellite's commands. Config reads and forwarding
-are admin-only and must originate in a private chat; groups ignore them
-silently.
+through `!aether <command>`; only built-ins resolve after that prefix. `!help`
+lists the available command groups, and `!help <satellite>` expands one; for
+admins, the expanded satellite view includes its config command. Config reads
+and forwarding are admin-only and must originate in a private chat; groups
+ignore them silently.
 
 ## 7. Test it
 

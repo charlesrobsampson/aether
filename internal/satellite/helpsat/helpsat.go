@@ -104,6 +104,12 @@ func (m *Manager) HandleHelp(t sdk.Transmission) error {
 	topic := helpTopic(t)
 
 	if topic == "" {
+		// With more than one group, list the available satellites instead of
+		// every command. help <satellite> expands one group; a single-group
+		// install still shows its commands directly.
+		if len(groups(entries)) > 1 {
+			return m.send(t, renderSummary(entries, prefix))
+		}
 		return m.send(t, renderList(entries, prefix))
 	}
 	topic = resolveAlias(cfg, actor, topic)
@@ -415,6 +421,28 @@ func helpTopic(t sdk.Transmission) string {
 		return ""
 	}
 	return strings.TrimSpace(strings.Join(fields, " "))
+}
+
+// renderSummary is the compact default view when more than one group is
+// available: it names each satellite instead of listing every command.
+func renderSummary(entries []Entry, prefix string) string {
+	var b strings.Builder
+	b.WriteString("*Available commands*\n")
+	for _, group := range groups(entries) {
+		count := 0
+		for _, entry := range entries {
+			if entry.Group == group {
+				count++
+			}
+		}
+		noun := "commands"
+		if count == 1 {
+			noun = "command"
+		}
+		fmt.Fprintf(&b, "*%s* (%d %s)\n", group, count, noun)
+	}
+	fmt.Fprintf(&b, "Send *%s* for details.", prefix+"help <satellite>")
+	return truncate(b.String())
 }
 
 // renderList is the compact default view: every command under its satellite.

@@ -93,13 +93,36 @@ func testManager(t *testing.T, role auth.Role) (*Manager, *recordingSender) {
 }
 
 func TestHelpListIsRoleAware(t *testing.T) {
-	t.Run("user sees user commands and satellites", func(t *testing.T) {
+	t.Run("summary lists satellites without every command", func(t *testing.T) {
 		manager, sender := testManager(t, auth.User)
 		if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help"}); err != nil {
 			t.Fatalf("HandleHelp: %v", err)
 		}
 		got := sender.last(t)
-		for _, want := range []string{"!help", "!test", "!remind", "!fly <station>"} {
+		for _, want := range []string{
+			"*Available commands*",
+			"*Aether* (3 commands)",
+			"*wx* (1 command)",
+			"Send *!help <satellite>* for details.",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("help summary does not contain %q:\n%s", want, got)
+			}
+		}
+		for _, unwanted := range []string{"!help [command]", "!fly <station>", "!admin"} {
+			if strings.Contains(got, unwanted) {
+				t.Errorf("help summary leaked a command %q:\n%s", unwanted, got)
+			}
+		}
+	})
+
+	t.Run("user sees user commands and satellites", func(t *testing.T) {
+		manager, sender := testManager(t, auth.User)
+		if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help aether"}); err != nil {
+			t.Fatalf("HandleHelp: %v", err)
+		}
+		got := sender.latest(t)
+		for _, want := range []string{"!help", "!test", "!remind"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("help list does not contain %q:\n%s", want, got)
 			}
@@ -107,11 +130,18 @@ func TestHelpListIsRoleAware(t *testing.T) {
 		if strings.Contains(got, "!admin") {
 			t.Errorf("help list leaked an admin command:\n%s", got)
 		}
+
+		if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help wx"}); err != nil {
+			t.Fatalf("HandleHelp: %v", err)
+		}
+		if got := sender.latest(t); !strings.Contains(got, "!fly <station>") {
+			t.Errorf("satellite help lacks its command:\n%s", got)
+		}
 	})
 
 	t.Run("admin sees admin commands", func(t *testing.T) {
 		manager, sender := testManager(t, auth.Admin)
-		if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help"}); err != nil {
+		if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help aether"}); err != nil {
 			t.Fatalf("HandleHelp: %v", err)
 		}
 		if got := sender.last(t); !strings.Contains(got, "!admin") {
@@ -237,8 +267,8 @@ func TestHelpSendsStyledText(t *testing.T) {
 	if !strings.Contains(resp.Text, "*Available commands*") {
 		t.Fatalf("styled help lacks a bold header: %q", resp.Text)
 	}
-	if !strings.Contains(resp.Text, "*!help") {
-		t.Fatalf("styled help lacks a bold command: %q", resp.Text)
+	if !strings.Contains(resp.Text, "*Aether*") {
+		t.Fatalf("styled help lacks a bold group: %q", resp.Text)
 	}
 }
 
@@ -248,7 +278,7 @@ func TestHelpGroupCapsAdminRole(t *testing.T) {
 	manager, sender := testManager(t, auth.Admin)
 	if err := manager.HandleHelp(sdk.Transmission{
 		Sender:  testSender,
-		Text:    "help",
+		Text:    "help aether",
 		GroupID: "group.example",
 	}); err != nil {
 		t.Fatalf("HandleHelp: %v", err)
@@ -283,28 +313,40 @@ func TestHelpGroupsCommandsBySatellite(t *testing.T) {
 	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help"}); err != nil {
 		t.Fatalf("HandleHelp: %v", err)
 	}
-	got := sender.last(t)
-
-	aether := strings.Index(got, "*Aether*")
-	weather := strings.Index(got, "*wx*")
+	summary := sender.last(t)
+	aether := strings.Index(summary, "*Aether*")
+	weather := strings.Index(summary, "*wx*")
 	if aether < 0 || weather < 0 {
-		t.Fatalf("help lacks group headings:\n%s", got)
+		t.Fatalf("help summary lacks group headings:\n%s", summary)
 	}
 	if aether > weather {
-		t.Fatalf("Aether group should come first:\n%s", got)
+		t.Fatalf("Aether group should come first:\n%s", summary)
 	}
-	if !strings.Contains(got[:weather], "!help") {
-		t.Fatalf("built-in help is not under Aether:\n%s", got)
+	if strings.Contains(summary, "!fly <station>") {
+		t.Fatalf("help summary listed a command instead of the group:\n%s", summary)
 	}
-	underWeather := got[weather:]
-	if !strings.Contains(underWeather, "!fly <station>") {
-		t.Fatalf("fly is not under weather:\n%s", got)
+
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help wx"}); err != nil {
+		t.Fatalf("HandleHelp wx: %v", err)
 	}
-	if !strings.Contains(underWeather, "!glide <site>") {
-		t.Fatalf("glide is not under weather:\n%s", got)
+	got := sender.latest(t)
+	if !strings.Contains(got, "*wx*") {
+		t.Fatalf("group detail lacks its heading:\n%s", got)
 	}
-	if strings.Contains(underWeather, "wx fly") || strings.Contains(underWeather, "wx glide") {
+	for _, want := range []string{"!fly <station>", "!glide <site>"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("group detail lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "wx fly") || strings.Contains(got, "wx glide") {
 		t.Fatalf("satellite prefix repeated on every command:\n%s", got)
+	}
+
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help aether"}); err != nil {
+		t.Fatalf("HandleHelp aether: %v", err)
+	}
+	if got := sender.latest(t); !strings.Contains(got, "!help") {
+		t.Fatalf("Aether group detail lacks built-ins:\n%s", got)
 	}
 }
 
@@ -322,7 +364,7 @@ func TestHelpListsCommandDescriptions(t *testing.T) {
 		},
 	}
 
-	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help"}); err != nil {
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help wx"}); err != nil {
 		t.Fatalf("HandleHelp: %v", err)
 	}
 	got := sender.last(t)
