@@ -95,9 +95,11 @@ satellites share a trigger, Aether replies with the prefixed forms to use.
 
 Satellites can also expose domain commands beyond config. For example,
 `wind-predictor` provides `!wind stations`, `!wind profiles`,
-`!wind profile <id>`, and `!wind profile set <id> <key> <value>`. Aether
-enforces sender and group approval, while the satellite decides who may read or
-change its own data.
+`!wind profile <id>`, and `!wind profile set <id> <key> <value>`, plus `!fly`
+for a forecast using the sender's default profile. A forecast can name a
+station, a profile, and an optional window: `!fly fps window 06:30-08:30` or
+`!fly fps ss_morning_soar window morning`. Aether enforces sender and group
+approval, while the satellite decides who may read or change its own data.
 
 Aether's own built-ins can be addressed like a satellite too: `!aether config
 list`, `!aether help wind`, or just `!aether` for help. After the `aether`
