@@ -20,8 +20,10 @@ import (
 const (
 	// SatelliteName identifies the built-in help satellite.
 	SatelliteName = "help"
-	// maxReplyChars keeps one help reply to a few screenfuls of chat.
-	maxReplyChars = 1200
+	// maxReplyChars keeps one help reply to a few screenfuls of chat. A
+	// satellite with several explicit commands (for example wind-predictor's
+	// profile commands) still fits, so help never hides the last command.
+	maxReplyChars = 2000
 )
 
 // Sender is the outbound seam used to reply through Aether's /message. The
@@ -540,12 +542,22 @@ func renderDetail(entry Entry, prefix string) string {
 	return strings.TrimSpace(truncate(b.String()))
 }
 
+// truncate caps a help reply without cutting a command in half. It prefers a
+// line boundary so the last visible line stays readable.
 func truncate(text string) string {
 	runes := []rune(text)
 	if len(runes) <= maxReplyChars {
 		return text
 	}
-	return string(runes[:maxReplyChars-1]) + "…"
+	limit := maxReplyChars - 2
+	if limit < 1 {
+		limit = 1
+	}
+	cut := string(runes[:limit])
+	if idx := strings.LastIndexByte(cut, '\n'); idx >= 0 {
+		cut = cut[:idx]
+	}
+	return cut + "\n…"
 }
 
 // helpPrefix returns the first configured command prefix, defaulting to "!".

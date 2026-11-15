@@ -2,6 +2,7 @@ package helpsat
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -155,6 +156,38 @@ func TestHelpDetail(t *testing.T) {
 			t.Fatalf("reply = %q", got)
 		}
 	})
+}
+
+func TestHelpShowsEveryCommandInALargeGroup(t *testing.T) {
+	manager, sender := testManager(t, auth.User)
+	cfg := manager.configSnapshot()
+
+	commands := make([]config.CommandConfig, 0, 16)
+	for i := 0; i < 16; i++ {
+		commands = append(commands, config.CommandConfig{
+			Name:        fmt.Sprintf("cmd%d", i),
+			Patterns:    []string{fmt.Sprintf("wind command-%02d <value>", i)},
+			Description: "A deliberately verbose description that fills the help reply",
+		})
+	}
+	cfg.Satellites["wind"] = config.SatelliteConfig{
+		Name:        "wind-predictor",
+		Trigger:     "wind",
+		Prefix:      "wind",
+		Description: "Wind commands",
+		Commands:    commands,
+	}
+
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help wind"}); err != nil {
+		t.Fatalf("HandleHelp: %v", err)
+	}
+	got := sender.last(t)
+	if strings.Contains(got, "…") {
+		t.Fatalf("large group was truncated:\n%s", got)
+	}
+	if !strings.Contains(got, "!wind command-15 <value>") {
+		t.Fatalf("help hid the last command:\n%s", got)
+	}
 }
 
 func TestHelpCapsOutput(t *testing.T) {
