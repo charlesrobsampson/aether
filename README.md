@@ -96,7 +96,9 @@ satellites share a trigger, Aether replies with the prefixed forms to use.
 Satellites can also expose domain commands beyond config. For example,
 `wind-predictor` provides `!wind stations`, `!wind profiles`,
 `!wind profile <id>`, and `!wind profile set <id> <key> <value>`, plus `!fly`
-for a forecast using the sender's default profile. A forecast can name a
+for a forecast using the sender's default profile. A bare `!fly` describes only
+the next flight window that has not ended; name a window to pick a different
+one. The reply includes the forecast sunrise and sunset. A forecast can name a
 station, a profile, and an optional window: `!fly fps window 06:30-08:30` or
 `!fly fps ss_morning_soar window morning`. Subscriptions use
 `!wind subscriptions`, `!wind subscribe <station> <profile>`, and
