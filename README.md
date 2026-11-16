@@ -98,8 +98,12 @@ Satellites can also expose domain commands beyond config. For example,
 `!wind profile <id>`, and `!wind profile set <id> <key> <value>`, plus `!fly`
 for a forecast using the sender's default profile. A forecast can name a
 station, a profile, and an optional window: `!fly fps window 06:30-08:30` or
-`!fly fps ss_morning_soar window morning`. Aether enforces sender and group
-approval, while the satellite decides who may read or change its own data.
+`!fly fps ss_morning_soar window morning`. Subscriptions use
+`!wind subscriptions`, `!wind subscribe <station> <profile>`, and
+`!wind unsubscribe <station> <profile>`; they are keyed by station and profile,
+so removing one does not depend on an array index. Aether enforces sender and
+group approval, while the satellite decides who may read or change its own
+data.
 
 Aether's own built-ins can be addressed like a satellite too: `!aether config
 list`, `!aether help wind`, or just `!aether` for help. After the `aether`
