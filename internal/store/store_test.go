@@ -38,6 +38,13 @@ var expectedSchema = []struct {
 		},
 	},
 	{
+		table: "reminders",
+		columns: []string{
+			"id", "sender", "group_id", "thread_id", "satellite",
+			"text", "due_at", "created_at", "fired_at",
+		},
+	},
+	{
 		table: "route_log",
 		columns: []string{
 			"id", "direction", "sender", "recipient", "satellite",

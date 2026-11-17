@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/charlesrobsampson/aether/internal/scheduler"
+	"github.com/charlesrobsampson/aether/internal/store"
 	"github.com/charlesrobsampson/aether/pkg/sdk"
 )
 
@@ -47,12 +48,23 @@ type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now() }
 
+// ReminderStore is the subset of internal/store used for durable reminders.
+// *store.Store implements it. A nil store keeps reminders in memory only.
+type ReminderStore interface {
+	InsertReminder(ctx context.Context, rec store.ReminderRecord) (int64, error)
+	PendingReminders(ctx context.Context) ([]store.ReminderRecord, error)
+	MarkReminderFired(ctx context.Context, id int64, at time.Time) error
+}
+
 // Options configures a Manager.
 type Options struct {
 	// Client posts responses to Aether. A nil client makes every command fail.
 	Client Sender
 	// Scheduler owns the reminder timers. A nil scheduler rejects reminders.
 	Scheduler *scheduler.Scheduler
+	// Store persists reminders so a restart does not drop them. Nil keeps
+	// reminders in memory only.
+	Store ReminderStore
 	// Clock is the reference time for datetimes that omit a date. Defaults to
 	// the system clock.
 	Clock Clock
@@ -70,6 +82,7 @@ type Options struct {
 type Manager struct {
 	client    Sender
 	scheduler *scheduler.Scheduler
+	store     ReminderStore
 	clock     Clock
 	timezone  func(string) string
 	onError   func(error)
@@ -88,6 +101,7 @@ func New(options Options) *Manager {
 	return &Manager{
 		client:    options.Client,
 		scheduler: options.Scheduler,
+		store:     options.Store,
 		clock:     clock,
 		timezone:  timezone,
 		onError:   options.OnError,
@@ -126,23 +140,95 @@ func (m *Manager) HandleRemind(t sdk.Transmission) error {
 		return err
 	}
 
-	fire := func() {
-		if err := m.send(t, reminder.text); err != nil && m.onError != nil {
-			m.onError(err)
-		}
+	dueAt := reminder.at
+	if !reminder.absolute {
+		dueAt = m.clock.Now().Add(reminder.delay)
 	}
+	id, err := m.persistReminder(t, reminder.text, dueAt)
+	if err != nil {
+		return err
+	}
+	m.scheduleReminder(t, reminder.text, dueAt, id)
+
 	if reminder.absolute {
-		m.scheduler.At(reminder.at, fire)
 		// The reaction acknowledges every reminder; an absolute time also gets
 		// one short normalized line so the user can verify the instant.
 		if err := m.send(t, fmt.Sprintf("Reminder set for %s: %s",
 			m.formatReminderTime(reminder.at, t.Actor()), reminder.text)); err != nil && m.onError != nil {
 			m.onError(err)
 		}
-	} else {
-		m.scheduler.After(reminder.delay, fire)
 	}
 	return nil
+}
+
+// RestoreReminders re-arms every reminder that was persisted but never fired.
+// A reminder whose due time passed while Aether was down is scheduled at the
+// next clock tick, so an outage delays it instead of dropping it.
+func (m *Manager) RestoreReminders(ctx context.Context) error {
+	if m == nil || m.store == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	records, err := m.store.PendingReminders(ctx)
+	if err != nil {
+		return err
+	}
+	for _, rec := range records {
+		t := sdk.Transmission{
+			Sender:    rec.Sender,
+			GroupID:   rec.GroupID,
+			ThreadID:  rec.ThreadID,
+			Satellite: rec.Satellite,
+		}
+		m.scheduleReminder(t, rec.Text, rec.DueAt, rec.ID)
+	}
+	return nil
+}
+
+// persistReminder saves the reminder before its timer is armed. A save failure
+// fails the command, because acknowledging a reminder that cannot survive a
+// restart would be misleading.
+func (m *Manager) persistReminder(t sdk.Transmission, text string, dueAt time.Time) (int64, error) {
+	if m.store == nil {
+		return 0, nil
+	}
+	id, err := m.store.InsertReminder(context.Background(), store.ReminderRecord{
+		Sender:    t.Sender,
+		GroupID:   t.GroupID,
+		ThreadID:  t.ThreadID,
+		Satellite: t.Satellite,
+		Text:      text,
+		DueAt:     dueAt,
+		CreatedAt: m.clock.Now(),
+	})
+	if err != nil {
+		return 0, sdk.Userf("I couldn't save that reminder. Try again.")
+	}
+	return id, nil
+}
+
+// scheduleReminder arms the timer and marks the row fired only after a
+// successful send. A failed send stays pending, so the next startup retries it
+// instead of silently losing it.
+func (m *Manager) scheduleReminder(t sdk.Transmission, text string, dueAt time.Time, id int64) {
+	fire := func() {
+		if err := m.send(t, text); err != nil {
+			if m.onError != nil {
+				m.onError(err)
+			}
+			return
+		}
+		if id == 0 || m.store == nil {
+			return
+		}
+		if err := m.store.MarkReminderFired(context.Background(), id, m.clock.Now()); err != nil && m.onError != nil {
+			m.onError(err)
+		}
+	}
+	m.scheduler.At(dueAt, fire)
 }
 
 // formatReminderTime renders an absolute reminder in the sender's timezone. An

@@ -202,6 +202,7 @@ func Run(ctx context.Context, opts Options) error {
 	testManager := testsat.New(testsat.Options{
 		Client:    sender,
 		Scheduler: sched,
+		Store:     st,
 		Clock:     clock,
 		Timezone: func(phone string) string {
 			cfg := snapshot.Load()
@@ -211,6 +212,11 @@ func Run(ctx context.Context, opts Options) error {
 			return cfg.Users[phone].Timezone
 		},
 	})
+	// Re-arm reminders that survived a restart. Overdue rows fire on the next
+	// scheduler tick, so a deploy delays a reminder instead of dropping it.
+	if err := testManager.RestoreReminders(ctx); err != nil {
+		log.Printf("reminders: restore pending: %v", err)
+	}
 	helpManager := helpsat.New(helpsat.Options{
 		Config:   snapshot.Load,
 		Client:   sender,

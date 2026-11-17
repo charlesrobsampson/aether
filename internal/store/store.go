@@ -423,6 +423,20 @@ var migrations = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_patches_phone ON patches (phone)`,
 
+	`CREATE TABLE IF NOT EXISTS reminders (
+		id         INTEGER PRIMARY KEY,
+		sender     TEXT NOT NULL,
+		group_id   TEXT NOT NULL DEFAULT '',
+		thread_id  TEXT NOT NULL DEFAULT '',
+		satellite  TEXT NOT NULL DEFAULT '',
+		text       TEXT NOT NULL,
+		due_at     TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		fired_at   TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_reminders_due_at ON reminders (due_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_reminders_fired_at ON reminders (fired_at)`,
+
 	`CREATE TABLE IF NOT EXISTS approvals (
 		id           INTEGER PRIMARY KEY,
 		phone        TEXT NOT NULL,

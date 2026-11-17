@@ -546,6 +546,11 @@ send attempt, `send_attempts` is the total attempt count including the first,
 - `remind` supports relative (`in <num> <unit>`) and absolute (`at <datetime>`)
   schedules via the scheduler.
 - A reminder fires exactly one `/message` back to the originating user.
+- Reminders are durable: each one is written to the `reminders` table before its
+  timer is armed, and `fired_at` is stamped only after a successful send.
+  Startup re-arms every row with an empty `fired_at`, so a restart or deploy
+  cannot drop a pending reminder and an overdue one fires late instead of
+  disappearing. A failed send stays pending and is retried on the next start.
 
 ### 3.17 Testing & CI
 
