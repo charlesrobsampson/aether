@@ -100,8 +100,10 @@ for a forecast using the sender's default profile. A bare `!fly` describes only
 the next flight window that has not ended; name a window to pick a different
 one. The reply includes the forecast sunrise and sunset. A forecast can name a
 station, a profile, and an optional window: `!fly fps window 06:30-08:30` or
-`!fly fps ss_morning_soar window morning`. Subscriptions use
-`!wind subscriptions`, `!wind subscribe <station> <profile>`, and
+`!fly fps ss_morning_soar window morning`. `!current` shows the last two hours
+of observations and the next four hours of forecast; `!current obs 3h forecast
+6h ml` changes either window and adds the calibrated ML values. Subscriptions
+use `!wind subscriptions`, `!wind subscribe <station> <profile>`, and
 `!wind unsubscribe <station> <profile>`; they are keyed by station and profile,
 so removing one does not depend on an array index. Aether enforces sender and
 group approval, while the satellite decides who may read or change its own
