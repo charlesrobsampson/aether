@@ -489,6 +489,7 @@ func builtins(configManager *configmgr.Manager, adminManager *adminmgr.Manager, 
 		wrap("deny", "deny", auth.Maintainer, "👍", "Denied.", adminManager.HandleDeny),
 		wrap("pending", "pending", auth.Maintainer, "", "", adminManager.HandlePending),
 		wrap("remind", "remind", auth.User, "👍", "Reminder set.", testManager.HandleRemind),
+		wrap("remind", "reminders", auth.User, "", "", testManager.HandleReminders),
 		wrap("test", "test", auth.User, "", "", testManager.HandleTest),
 		wrap("help", "help", auth.User, "", "", helpManager.HandleHelp),
 	}
@@ -536,6 +537,20 @@ func helpCommands() []helpsat.Entry {
 				"Units: seconds, minutes, hours, days (s, min, h, d).",
 				"Times: 2026-11-08 09:00, 09:00, Monday 09:00, or RFC3339.",
 				"Times use your configured timezone; past times are rejected.",
+				`Send "reminders" to list what is still pending.`,
+			},
+		},
+		{
+			Name:        "reminders",
+			Trigger:     "reminders",
+			Usage:       "reminders",
+			Description: "List pending reminders",
+			Role:        auth.User,
+			Details: []string{
+				"Shows reminders that have not fired yet, soonest first.",
+				"Each line starts with the reminder id.",
+				"In a group, lists the group's reminders; in a direct chat, yours.",
+				`"remind list" is a shorthand for the same list.`,
 			},
 		},
 		{

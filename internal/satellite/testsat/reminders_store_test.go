@@ -3,7 +3,9 @@ package testsat
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -52,6 +54,31 @@ func (f *fakeReminderStore) PendingReminders(_ context.Context) ([]store.Reminde
 		if rec.FiredAt.IsZero() {
 			out = append(out, rec)
 		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].DueAt.Before(out[j].DueAt) })
+	return out, nil
+}
+
+func (f *fakeReminderStore) PendingRemindersFor(_ context.Context, principal string) ([]store.ReminderRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.pendingErr != nil {
+		return nil, f.pendingErr
+	}
+	principal = strings.TrimSpace(principal)
+	var out []store.ReminderRecord
+	for _, rec := range f.records {
+		if !rec.FiredAt.IsZero() {
+			continue
+		}
+		if rec.GroupID != "" {
+			if rec.GroupID != principal {
+				continue
+			}
+		} else if rec.Sender != principal {
+			continue
+		}
+		out = append(out, rec)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].DueAt.Before(out[j].DueAt) })
 	return out, nil
@@ -297,4 +324,207 @@ func TestReminderStoreFailureIsUserSafe(t *testing.T) {
 
 	clock.Advance(time.Minute)
 	requireResponses(t, sender, 0)
+}
+
+func TestHandleRemindersListsConversationPending(t *testing.T) {
+	ctx := context.Background()
+	start := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+	clock := testutil.NewFakeClock(start)
+	sender := &recordingSender{}
+	reminders := newFakeReminderStore()
+	manager := New(Options{
+		Client:    sender,
+		Scheduler: scheduler.New(clock),
+		Store:     reminders,
+		Clock:     clock,
+		Timezone:  func(string) string { return "America/Chicago" },
+	})
+
+	seed := []store.ReminderRecord{
+		{Sender: testSender, Text: "first", DueAt: start.Add(time.Hour)},
+		{Sender: testSender, Text: "second\nline", DueAt: start.Add(2 * time.Hour)},
+		{Sender: "+15555550199", Text: "not mine", DueAt: start},
+		{Sender: testSender, GroupID: "group.example", Text: "group only", DueAt: start},
+	}
+	for _, rec := range seed {
+		if _, err := reminders.InsertReminder(ctx, rec); err != nil {
+			t.Fatalf("InsertReminder(%q): %v", rec.Text, err)
+		}
+	}
+	firedID, err := reminders.InsertReminder(ctx, store.ReminderRecord{
+		Sender: testSender, Text: "already done", DueAt: start.Add(-time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("InsertReminder(fired): %v", err)
+	}
+	if err := reminders.MarkReminderFired(ctx, firedID, start); err != nil {
+		t.Fatalf("MarkReminderFired: %v", err)
+	}
+
+	if err := manager.HandleReminders(sdk.Transmission{
+		Sender:    testSender,
+		Satellite: testSatellite,
+	}); err != nil {
+		t.Fatalf("HandleReminders: %v", err)
+	}
+	got := requireResponses(t, sender, 1)
+	text := got[0].Text
+	if !strings.HasPrefix(text, "Pending reminders:") {
+		t.Fatalf("reply = %q, want a pending-reminders header", text)
+	}
+	for _, want := range []string{"#", "first", "second line"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("reply %q missing %q", text, want)
+		}
+	}
+	for _, unwanted := range []string{"not mine", "group only", "already done"} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("reply %q leaked %q", text, unwanted)
+		}
+	}
+	if strings.Index(text, "first") > strings.Index(text, "second line") {
+		t.Errorf("reply is not ordered by due time: %q", text)
+	}
+
+	// A group lists only the group's reminders, not its members' direct ones.
+	groupSender := &recordingSender{}
+	groupManager := New(Options{
+		Client:    groupSender,
+		Scheduler: scheduler.New(clock),
+		Store:     reminders,
+		Clock:     clock,
+		Timezone:  func(string) string { return "America/Chicago" },
+	})
+	if err := groupManager.HandleReminders(sdk.Transmission{
+		Sender:    testSender,
+		GroupID:   "group.example",
+		Satellite: testSatellite,
+	}); err != nil {
+		t.Fatalf("HandleReminders(group): %v", err)
+	}
+	got = requireResponses(t, groupSender, 1)
+	if !strings.Contains(got[0].Text, "group only") {
+		t.Errorf("group reply = %q, want the group reminder", got[0].Text)
+	}
+	if strings.Contains(got[0].Text, "first") {
+		t.Errorf("group reply = %q, leaked a direct reminder", got[0].Text)
+	}
+	if len(got[0].Recipients) != 1 || got[0].Recipients[0] != "group.example" {
+		t.Errorf("recipients = %v, want [group.example]", got[0].Recipients)
+	}
+
+	// A conversation with nothing pending gets a plain text answer.
+	emptySender := &recordingSender{}
+	emptyManager := New(Options{
+		Client:    emptySender,
+		Scheduler: scheduler.New(clock),
+		Store:     reminders,
+		Clock:     clock,
+		Timezone:  func(string) string { return "America/Chicago" },
+	})
+	if err := emptyManager.HandleReminders(sdk.Transmission{
+		Sender:    "+15555550198",
+		Satellite: testSatellite,
+	}); err != nil {
+		t.Fatalf("HandleReminders(empty): %v", err)
+	}
+	got = requireResponses(t, emptySender, 1)
+	if got[0].Text != "No pending reminders." {
+		t.Errorf("empty reply = %q, want %q", got[0].Text, "No pending reminders.")
+	}
+}
+
+func TestRemindListAliasDoesNotSchedule(t *testing.T) {
+	ctx := context.Background()
+	start := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+	clock := testutil.NewFakeClock(start)
+	sender := &recordingSender{}
+	reminders := newFakeReminderStore()
+	manager := New(Options{
+		Client:    sender,
+		Scheduler: scheduler.New(clock),
+		Store:     reminders,
+		Clock:     clock,
+		Timezone:  func(string) string { return "America/Chicago" },
+	})
+	if _, err := reminders.InsertReminder(ctx, store.ReminderRecord{
+		Sender: testSender, Text: "existing", DueAt: start.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("InsertReminder: %v", err)
+	}
+
+	if err := manager.HandleRemind(sdk.Transmission{
+		Trigger:   "remind",
+		Text:      "remind list",
+		Sender:    testSender,
+		Satellite: testSatellite,
+	}); err != nil {
+		t.Fatalf("HandleRemind(list): %v", err)
+	}
+	got := requireResponses(t, sender, 1)
+	if !strings.Contains(got[0].Text, "existing") {
+		t.Errorf("reply = %q, want the existing reminder", got[0].Text)
+	}
+	if records := reminders.only(t); records.Text != "existing" {
+		t.Errorf("alias created a reminder: %+v", records)
+	}
+}
+
+func TestHandleRemindersStoreFailureIsUserSafe(t *testing.T) {
+	start := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+	clock := testutil.NewFakeClock(start)
+	sender := &recordingSender{}
+	reminders := newFakeReminderStore()
+	reminders.pendingErr = errors.New("database unavailable")
+	manager := New(Options{
+		Client:    sender,
+		Scheduler: scheduler.New(clock),
+		Store:     reminders,
+		Clock:     clock,
+		Timezone:  func(string) string { return "America/Chicago" },
+	})
+
+	err := manager.HandleReminders(sdk.Transmission{
+		Sender:    testSender,
+		Satellite: testSatellite,
+	})
+	if _, ok := sdk.AsUserMessage(err); !ok {
+		t.Fatalf("error %v is not user-facing", err)
+	}
+	requireResponses(t, sender, 0)
+}
+
+func TestHandleRemindersCapsLongList(t *testing.T) {
+	ctx := context.Background()
+	start := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+	clock := testutil.NewFakeClock(start)
+	sender := &recordingSender{}
+	reminders := newFakeReminderStore()
+	manager := New(Options{
+		Client:    sender,
+		Scheduler: scheduler.New(clock),
+		Store:     reminders,
+		Clock:     clock,
+		Timezone:  func(string) string { return "America/Chicago" },
+	})
+	for i := 0; i < maxReminderList+3; i++ {
+		if _, err := reminders.InsertReminder(ctx, store.ReminderRecord{
+			Sender: testSender,
+			Text:   fmt.Sprintf("reminder %d", i),
+			DueAt:  start.Add(time.Duration(i+1) * time.Hour),
+		}); err != nil {
+			t.Fatalf("InsertReminder(%d): %v", i, err)
+		}
+	}
+
+	if err := manager.HandleReminders(sdk.Transmission{
+		Sender:    testSender,
+		Satellite: testSatellite,
+	}); err != nil {
+		t.Fatalf("HandleReminders: %v", err)
+	}
+	got := requireResponses(t, sender, 1)
+	if !strings.Contains(got[0].Text, "... and 3 more") {
+		t.Errorf("reply = %q, want an overflow line", got[0].Text)
+	}
 }

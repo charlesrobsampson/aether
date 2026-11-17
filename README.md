@@ -73,6 +73,11 @@ The same works with `!config set prefixes ""`. This overrides the system
 persona prefixes for that user; commands are then typed bare, for example
 `config list`.
 
+Built-in reminders: `!remind me <text> in <count> <unit>` or `!remind me <text>
+at <datetime>` schedules a one-off message, and `!reminders` lists what is still
+pending (`!remind list` works too). Reminders survive restarts, and one that
+came due while Aether was down is delivered on the next start.
+
 Unprefixed `!config` always means Aether's own settings. Satellite-owned
 settings use the satellite's prefix and mirror the same list/get/export/set
 feel:

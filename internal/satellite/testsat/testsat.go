@@ -30,6 +30,9 @@ const (
 	defaultReminderText = "Reminder"
 	// testReply is the fixed echo required by plan §3.16.
 	testReply = "test received"
+	// maxReminderList caps one list reply so a long backlog does not flood the
+	// chat. The remainder is reported as a count.
+	maxReminderList = 20
 )
 
 // Sender is the outbound seam used to reply through Aether's /message. The
@@ -53,6 +56,7 @@ func (systemClock) Now() time.Time { return time.Now() }
 type ReminderStore interface {
 	InsertReminder(ctx context.Context, rec store.ReminderRecord) (int64, error)
 	PendingReminders(ctx context.Context) ([]store.ReminderRecord, error)
+	PendingRemindersFor(ctx context.Context, principal string) ([]store.ReminderRecord, error)
 	MarkReminderFired(ctx context.Context, id int64, at time.Time) error
 }
 
@@ -131,6 +135,9 @@ func (m *Manager) HandleRemind(t sdk.Transmission) error {
 	if err := requireSender(t); err != nil {
 		return err
 	}
+	if reminderListRequest(t.Text, t.Trigger) {
+		return m.HandleReminders(t)
+	}
 	if m == nil || m.scheduler == nil {
 		return errors.New("testsat: reminder scheduler is not configured")
 	}
@@ -159,6 +166,60 @@ func (m *Manager) HandleRemind(t sdk.Transmission) error {
 		}
 	}
 	return nil
+}
+
+// HandleReminders lists the pending reminders owned by the originating
+// conversation. A group lists the group's reminders; a direct chat lists the
+// sender's. The reply is text because this command only reads.
+func (m *Manager) HandleReminders(t sdk.Transmission) error {
+	if err := requireSender(t); err != nil {
+		return err
+	}
+	if m == nil || m.store == nil {
+		return errors.New("testsat: reminder store is not configured")
+	}
+
+	actor := t.Actor()
+	records, err := m.store.PendingRemindersFor(context.Background(), actor)
+	if err != nil {
+		return sdk.Userf("I couldn't load your reminders. Try again.")
+	}
+	return m.send(t, m.renderReminders(records, actor))
+}
+
+// renderReminders formats pending reminders in due order. Text is collapsed to
+// one line so each reminder stays scannable in chat.
+func (m *Manager) renderReminders(records []store.ReminderRecord, actor string) string {
+	if len(records) == 0 {
+		return "No pending reminders."
+	}
+
+	var b strings.Builder
+	b.WriteString("Pending reminders:\n")
+	limit := len(records)
+	if limit > maxReminderList {
+		limit = maxReminderList
+	}
+	for _, rec := range records[:limit] {
+		fmt.Fprintf(&b, "  #%d %s — %s\n",
+			rec.ID, m.formatReminderTime(rec.DueAt, actor), oneLine(rec.Text))
+	}
+	if remaining := len(records) - limit; remaining > 0 {
+		fmt.Fprintf(&b, "  ... and %d more\n", remaining)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// reminderListRequest reports whether the text is the convenience alias
+// "remind list" rather than a reminder to schedule.
+func reminderListRequest(text, trigger string) bool {
+	rest := strings.ToLower(normalizeWhitespace(stripTrigger(text, trigger)))
+	return rest == "list" || rest == "ls"
+}
+
+// oneLine collapses newlines and runs of spaces into single spaces.
+func oneLine(text string) string {
+	return strings.Join(strings.Fields(text), " ")
 }
 
 // RestoreReminders re-arms every reminder that was persisted but never fired.

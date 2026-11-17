@@ -546,6 +546,10 @@ send attempt, `send_attempts` is the total attempt count including the first,
 - `remind` supports relative (`in <num> <unit>`) and absolute (`at <datetime>`)
   schedules via the scheduler.
 - A reminder fires exactly one `/message` back to the originating user.
+- `reminders` (or `remind list`) lists the pending reminders for the current
+  conversation, soonest first. A group lists the group's reminders; a direct
+  chat lists the sender's. The reply is text and starts each line with the
+  reminder id.
 - Reminders are durable: each one is written to the `reminders` table before its
   timer is armed, and `fired_at` is stamped only after a successful send.
   Startup re-arms every row with an empty `fired_at`, so a restart or deploy

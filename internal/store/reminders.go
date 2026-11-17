@@ -84,6 +84,37 @@ func (s *Store) PendingReminders(ctx context.Context) ([]ReminderRecord, error) 
 	}
 	defer rows.Close()
 
+	return scanReminders(rows)
+}
+
+// PendingRemindersFor returns the pending reminders owned by one principal. A
+// group principal owns the reminders set in that group; a direct principal owns
+// reminders with no group. Results are oldest due first.
+func (s *Store) PendingRemindersFor(ctx context.Context, principal string) ([]ReminderRecord, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("store: closed")
+	}
+	principal = strings.TrimSpace(principal)
+	if principal == "" {
+		return nil, nil
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, sender, group_id, thread_id, satellite, text, due_at, created_at
+		FROM reminders
+		WHERE fired_at = ''
+		  AND ((group_id <> '' AND group_id = ?) OR (group_id = '' AND sender = ?))
+		ORDER BY due_at, id`, principal, principal)
+	if err != nil {
+		return nil, fmt.Errorf("store: list reminders for %q: %w", principal, err)
+	}
+	defer rows.Close()
+
+	return scanReminders(rows)
+}
+
+// scanReminders reads the common reminder projection. The caller closes rows.
+func scanReminders(rows *sql.Rows) ([]ReminderRecord, error) {
 	var out []ReminderRecord
 	for rows.Next() {
 		var (
@@ -96,6 +127,7 @@ func (s *Store) PendingReminders(ctx context.Context) ([]ReminderRecord, error) 
 		); err != nil {
 			return nil, fmt.Errorf("store: scan reminder: %w", err)
 		}
+		var err error
 		if rec.DueAt, err = time.Parse(time.RFC3339, dueAt); err != nil {
 			return nil, fmt.Errorf("store: parse reminder %d due_at: %w", rec.ID, err)
 		}

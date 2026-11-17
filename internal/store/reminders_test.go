@@ -78,6 +78,48 @@ func TestReminders(t *testing.T) {
 	}
 }
 
+func TestPendingRemindersForPrincipal(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open(:memory:): %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	base := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	rows := []ReminderRecord{
+		{Sender: "+15555550102", Text: "mine later", DueAt: base.Add(2 * time.Hour)},
+		{Sender: "+15555550102", Text: "mine sooner", DueAt: base.Add(time.Hour)},
+		{Sender: "+15555550102", GroupID: "group.one", Text: "group one", DueAt: base},
+		{Sender: "+15555550103", Text: "someone else", DueAt: base},
+	}
+	for _, rec := range rows {
+		if _, err := st.InsertReminder(ctx, rec); err != nil {
+			t.Fatalf("InsertReminder(%q): %v", rec.Text, err)
+		}
+	}
+
+	got, err := st.PendingRemindersFor(ctx, "+15555550102")
+	if err != nil {
+		t.Fatalf("PendingRemindersFor(direct): %v", err)
+	}
+	if len(got) != 2 || got[0].Text != "mine sooner" || got[1].Text != "mine later" {
+		t.Fatalf("direct pending = %+v, want [mine sooner, mine later]", got)
+	}
+
+	got, err = st.PendingRemindersFor(ctx, "group.one")
+	if err != nil {
+		t.Fatalf("PendingRemindersFor(group): %v", err)
+	}
+	if len(got) != 1 || got[0].Text != "group one" {
+		t.Fatalf("group pending = %+v, want [group one]", got)
+	}
+
+	if got, err = st.PendingRemindersFor(ctx, ""); err != nil || len(got) != 0 {
+		t.Fatalf("PendingRemindersFor(empty) = %+v, %v; want empty", got, err)
+	}
+}
+
 func TestInsertReminderValidation(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(":memory:")
