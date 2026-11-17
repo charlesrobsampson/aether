@@ -115,19 +115,18 @@ prefix only built-ins resolve, so a satellite trigger such as `!aether fly FPS`
 is rejected instead of silently reaching the satellite.
 
 `!help` lists the available command groups (Aether plus each satellite) with a
-command count. `!help <group>` expands one group, using the short prefix when
-configured (`wind`) and the canonical name otherwise; commands are shown
-indented with a short description and without repeating the heading. When only
-one group exists, `!help` shows its commands directly. `!help wind` or
-`!help wind-predictor` lists one satellite, and `!help aether` lists the
-built-ins. `!help <satellite> <command>` expands one command inside that
-satellite; when only one satellite defines the command the satellite may be
-omitted, so `!help wind fly` and `!help fly` are equivalent. If several
-satellites share the command, help replies with the prefixed forms to use.
-When prefixes are required, each command word carries the prefix, so the
-explicit form is `!help !wind !fly`. Admins also see each satellite's config
-command. Satellite config reads and writes are admin-only and must originate in
-a private chat; groups ignore them silently.
+count of top-level commands. `!help <group>` expands one group, using the short
+prefix when configured (`wind`) and the canonical name otherwise; it lists only
+each top-level command and how many options it offers, so the reply stays
+short. `!help wind` or `!help wind-predictor` lists one satellite, and
+`!help aether` lists the built-ins. `!help <satellite> <command>` shows every
+option for one command inside that satellite; when only one satellite defines
+the command the satellite may be omitted, so `!help wind fly` and `!help fly`
+are equivalent. If several satellites share the command, help replies with the
+prefixed forms to use. When prefixes are required, each command word carries
+the prefix, so the explicit form is `!help !wind !fly`. Admins also see each
+satellite's config command. Satellite config reads and writes are admin-only
+and must originate in a private chat; groups ignore them silently.
 
 Command names, subcommands, satellite triggers, aliases, and prefixes are
 case-insensitive, so a phone that autocapitalizes the first word still works

@@ -505,8 +505,9 @@ func helpCommands() []helpsat.Entry {
 			Description: "List available commands",
 			Role:        auth.User,
 			Details: []string{
-				`Send "help <command>" to expand one command.`,
-				`Send "help <satellite>" to list one satellite's commands.`,
+				`Send "help <satellite>" to list its top-level commands.`,
+				`Send "help <satellite> <command>" to see every option for one command.`,
+				`Send "help <command>" when only one satellite defines it.`,
 				"Commands are grouped by satellite. Prefix a shared trigger with its satellite name or short prefix.",
 			},
 		},

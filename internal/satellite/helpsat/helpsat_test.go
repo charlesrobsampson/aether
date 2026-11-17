@@ -134,8 +134,15 @@ func TestHelpListIsRoleAware(t *testing.T) {
 		if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help wx"}); err != nil {
 			t.Fatalf("HandleHelp: %v", err)
 		}
+		if got := sender.latest(t); !strings.Contains(got, "*!fly* (1 option)") {
+			t.Errorf("satellite help lacks its top-level command:\n%s", got)
+		}
+
+		if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help wx fly"}); err != nil {
+			t.Fatalf("HandleHelp: %v", err)
+		}
 		if got := sender.latest(t); !strings.Contains(got, "!fly <station>") {
-			t.Errorf("satellite help lacks its command:\n%s", got)
+			t.Errorf("command detail lacks its pattern:\n%s", got)
 		}
 	})
 
@@ -188,7 +195,7 @@ func TestHelpDetail(t *testing.T) {
 	})
 }
 
-func TestHelpShowsEveryCommandInALargeGroup(t *testing.T) {
+func TestHelpCollapsesLargeGroupToTopLevelCommands(t *testing.T) {
 	manager, sender := testManager(t, auth.User)
 	cfg := manager.configSnapshot()
 
@@ -215,8 +222,18 @@ func TestHelpShowsEveryCommandInALargeGroup(t *testing.T) {
 	if strings.Contains(got, "…") {
 		t.Fatalf("large group was truncated:\n%s", got)
 	}
-	if !strings.Contains(got, "!wind command-15 <value>") {
-		t.Fatalf("help hid the last command:\n%s", got)
+	if !strings.Contains(got, "*!wind* (16 options)") {
+		t.Fatalf("group help did not collapse to one command:\n%s", got)
+	}
+	if strings.Contains(got, "command-15") {
+		t.Fatalf("group help listed every option:\n%s", got)
+	}
+
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help wind wind"}); err != nil {
+		t.Fatalf("HandleHelp detail: %v", err)
+	}
+	if detail := sender.latest(t); !strings.Contains(detail, "!wind command-15 <value>") {
+		t.Fatalf("command detail hid the last option:\n%s", detail)
 	}
 }
 
@@ -333,13 +350,28 @@ func TestHelpGroupsCommandsBySatellite(t *testing.T) {
 	if !strings.Contains(got, "*wx*") {
 		t.Fatalf("group detail lacks its heading:\n%s", got)
 	}
-	for _, want := range []string{"!fly <station>", "!glide <site>"} {
+	for _, want := range []string{"*!fly* (1 option)", "*!glide* (1 option)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("group detail lacks %q:\n%s", want, got)
 		}
 	}
 	if strings.Contains(got, "wx fly") || strings.Contains(got, "wx glide") {
 		t.Fatalf("satellite prefix repeated on every command:\n%s", got)
+	}
+
+	for _, command := range []struct {
+		topic string
+		want  string
+	}{
+		{"help wx fly", "!fly <station>"},
+		{"help wx glide", "!glide <site>"},
+	} {
+		if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: command.topic}); err != nil {
+			t.Fatalf("HandleHelp %s: %v", command.topic, err)
+		}
+		if got := sender.latest(t); !strings.Contains(got, command.want) {
+			t.Fatalf("%s lacks %q:\n%s", command.topic, command.want, got)
+		}
 	}
 
 	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help aether"}); err != nil {
@@ -368,24 +400,33 @@ func TestHelpListsCommandDescriptions(t *testing.T) {
 		t.Fatalf("HandleHelp: %v", err)
 	}
 	got := sender.last(t)
-	for _, want := range []string{
-		"*!glider*, *!glider status* — Check the glider",
-		"*!glider loaded* — Mark the glider loaded",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("help lacks %q:\n%s", want, got)
-		}
+	if !strings.Contains(got, "*!glider* (3 options)") {
+		t.Fatalf("help did not collapse the glider command:\n%s", got)
 	}
 	if strings.Contains(got, "glider <action>") {
 		t.Fatalf("help still shows an opaque action placeholder:\n%s", got)
 	}
 
-	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help glider loaded"}); err != nil {
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help wx glider"}); err != nil {
 		t.Fatalf("HandleHelp detail: %v", err)
 	}
 	detail := sender.latest(t)
-	if !strings.Contains(detail, "*!glider loaded*") || !strings.Contains(detail, "Mark the glider loaded") {
-		t.Fatalf("detail lacks the explicit command:\n%s", detail)
+	for _, want := range []string{
+		"*!glider* — Check the glider",
+		"*!glider status* — Check the glider",
+		"*!glider loaded* — Mark the glider loaded",
+	} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("detail lacks %q:\n%s", want, detail)
+		}
+	}
+
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help glider loaded"}); err != nil {
+		t.Fatalf("HandleHelp explicit detail: %v", err)
+	}
+	explicit := sender.latest(t)
+	if !strings.Contains(explicit, "*!glider loaded*") || !strings.Contains(explicit, "Mark the glider loaded") {
+		t.Fatalf("detail lacks the explicit command:\n%s", explicit)
 	}
 }
 
@@ -397,7 +438,7 @@ func TestHelpSatelliteGroupDetail(t *testing.T) {
 		t.Fatalf("HandleHelp: %v", err)
 	}
 	got := sender.last(t)
-	for _, want := range []string{"*wx*", "!fly <station>", "!glide <site>"} {
+	for _, want := range []string{"*wx*", "*!fly* (1 option)", "*!glide* (1 option)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("group detail lacks %q:\n%s", want, got)
 		}
@@ -411,7 +452,7 @@ func TestHelpSatelliteGroupShortPrefix(t *testing.T) {
 		t.Fatalf("HandleHelp: %v", err)
 	}
 	got := sender.last(t)
-	for _, want := range []string{"*wx*", "!fly <station>"} {
+	for _, want := range []string{"*wx*", "*!fly* (1 option)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("short-prefix group detail lacks %q:\n%s", want, got)
 		}
@@ -425,8 +466,15 @@ func TestHelpListsSatelliteConfigForAdmins(t *testing.T) {
 		t.Fatalf("HandleHelp: %v", err)
 	}
 	got := sender.last(t)
-	if !strings.Contains(got, "!config set <key> <value>") {
+	if !strings.Contains(got, "*!config* (4 options)") {
 		t.Fatalf("group detail lacks the satellite config command:\n%s", got)
+	}
+
+	if err := manager.HandleHelp(sdk.Transmission{Sender: testSender, Text: "help weather config"}); err != nil {
+		t.Fatalf("HandleHelp config: %v", err)
+	}
+	if detail := sender.latest(t); !strings.Contains(detail, "!config set <key> <value>") {
+		t.Fatalf("config detail lacks the set pattern:\n%s", detail)
 	}
 }
 

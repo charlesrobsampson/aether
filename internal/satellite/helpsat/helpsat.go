@@ -104,20 +104,17 @@ func (m *Manager) HandleHelp(t sdk.Transmission) error {
 	topic := helpTopic(t, helpPrefixes(cfg, actor))
 
 	if topic == "" {
-		// With more than one group, list the available satellites instead of
-		// every command. help <satellite> expands one group; a single-group
-		// install still shows its commands directly.
-		if len(groups(entries)) > 1 {
-			return m.send(t, renderSummary(entries, prefix))
-		}
-		return m.send(t, renderList(entries, prefix))
+		// The root view names the available satellites instead of every
+		// command. help <satellite> expands one group into its top-level
+		// commands.
+		return m.send(t, renderSummary(entries, prefix))
 	}
 	topic = resolveTopicAliases(cfg, actor, topic)
 
 	// "help <satellite> <command>" scopes the lookup to one satellite, so a
 	// command shared by several satellites is still unambiguous. The satellite
 	// may be its short prefix or canonical name. "help <satellite>" lists the
-	// whole group.
+	// group's top-level commands.
 	if fields := strings.Fields(topic); len(fields) > 0 {
 		if group := groupForTopic(entries, fields[0]); group != "" {
 			rest := strings.TrimSpace(strings.Join(fields[1:], " "))
@@ -126,7 +123,7 @@ func (m *Manager) HandleHelp(t sdk.Transmission) error {
 			}
 			scoped := groupEntries(entries, group)
 			if matches := matchEntries(scoped, rest); len(matches) > 0 {
-				return m.send(t, renderDetail(matches[0], prefix))
+				return m.send(t, renderCommandDetail(matches, prefix))
 			}
 			return m.send(t, unknownTopicReply(scoped, rest, prefix))
 		}
@@ -141,7 +138,7 @@ func (m *Manager) HandleHelp(t sdk.Transmission) error {
 	case len(distinctGroups(matches)) > 1:
 		return m.send(t, ambiguousTopicReply(distinctGroups(matches), topic, prefix))
 	}
-	return m.send(t, renderDetail(matches[0], prefix))
+	return m.send(t, renderCommandDetail(matches, prefix))
 }
 
 func (m *Manager) configSnapshot() *config.Config {
@@ -549,18 +546,17 @@ func stripTokenPrefixes(word string, prefixes []string) string {
 	}
 }
 
-// renderSummary is the compact default view when more than one group is
-// available: it names each satellite instead of listing every command.
+// renderSummary is the compact default view: it names each satellite and how
+// many top-level commands it offers, instead of listing every command.
 func renderSummary(entries []Entry, prefix string) string {
+	groupNames := groups(entries)
+	if len(groupNames) == 0 {
+		return "No commands are available."
+	}
 	var b strings.Builder
 	b.WriteString("*Available commands*\n")
-	for _, group := range groups(entries) {
-		count := 0
-		for _, entry := range entries {
-			if entry.Group == group {
-				count++
-			}
-		}
+	for _, group := range groupNames {
+		count := len(groupCommands(entries, group))
 		noun := "commands"
 		if count == 1 {
 			noun = "command"
@@ -571,63 +567,117 @@ func renderSummary(entries []Entry, prefix string) string {
 	return truncate(b.String())
 }
 
-// renderList is the compact default view: every command under its satellite.
-func renderList(entries []Entry, prefix string) string {
+// renderGroup lists one satellite's top-level commands. Each line names the
+// command and how many options it offers; help <satellite> <command> expands
+// them.
+func renderGroup(entries []Entry, group, prefix string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "*%s*\n", group)
+	for _, command := range groupCommands(entries, group) {
+		count := optionCount(command.entries)
+		noun := "options"
+		if count == 1 {
+			noun = "option"
+		}
+		fmt.Fprintf(&b, "  *%s%s* (%d %s)\n", prefix, command.trigger, count, noun)
+	}
+	fmt.Fprintf(&b, "Send *%s* for details.", prefix+"help "+group+" <command>")
+	return truncate(b.String())
+}
+
+// commandGroup collects the entries that share one top-level command word.
+type commandGroup struct {
+	trigger string
+	entries []Entry
+}
+
+// groupCommands collapses a satellite's entries by their top-level command, so
+// the satellite view shows one line per command instead of every pattern.
+func groupCommands(entries []Entry, group string) []commandGroup {
+	var out []commandGroup
+	index := make(map[string]int)
+	for _, entry := range entries {
+		if !strings.EqualFold(entry.Group, group) {
+			continue
+		}
+		trigger := strings.TrimSpace(entry.Trigger)
+		if trigger == "" {
+			continue
+		}
+		key := strings.ToLower(trigger)
+		if position, ok := index[key]; ok {
+			out[position].entries = append(out[position].entries, entry)
+			continue
+		}
+		index[key] = len(out)
+		out = append(out, commandGroup{trigger: trigger, entries: []Entry{entry}})
+	}
+	return out
+}
+
+// optionCount counts the patterns a command offers. Entries without patterns
+// (built-ins) count as one option.
+func optionCount(entries []Entry) int {
+	count := 0
+	for _, entry := range entries {
+		if len(entry.Patterns) > 0 {
+			count += len(entry.Patterns)
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+// renderCommandDetail expands one top-level command. Every configured pattern
+// is shown with its description, followed by details such as aliases, so the
+// satellite view can stay one line per command.
+func renderCommandDetail(entries []Entry, prefix string) string {
 	if len(entries) == 0 {
 		return "No commands are available."
 	}
 	var b strings.Builder
-	b.WriteString("*Available commands*\n")
-	for _, group := range groups(entries) {
-		fmt.Fprintf(&b, "*%s*\n", group)
-		for _, entry := range entries {
-			if entry.Group != group {
-				continue
-			}
-			writeEntry(&b, entry, prefix)
-		}
+	if command := strings.TrimSpace(entries[0].Trigger); command != "" {
+		fmt.Fprintf(&b, "*%s%s*\n", prefix, command)
 	}
-	fmt.Fprintf(&b, "Send *%s* for details.", prefix+"help <command>")
-	return truncate(b.String())
-}
-
-// renderGroup lists every command that belongs to one satellite.
-func renderGroup(entries []Entry, group, prefix string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "*%s*\n", group)
 	for _, entry := range entries {
-		if entry.Group == group {
-			writeEntry(&b, entry, prefix)
-		}
-	}
-	fmt.Fprintf(&b, "Send *%s* for details.", prefix+"help <command>")
-	return truncate(b.String())
-}
-
-// writeEntry prints one command. Satellite entries list their configured
-// patterns on one line so related spellings stay together, then the command's
-// description. The satellite heading already names the satellite, so patterns
-// are shown without a satellite prefix.
-func writeEntry(b *strings.Builder, entry Entry, prefix string) {
-	if len(entry.Patterns) > 0 {
-		for i, pattern := range entry.Patterns {
-			if i == 0 {
-				fmt.Fprintf(b, "  *%s%s*", prefix, pattern)
-				continue
+		if len(entry.Patterns) > 0 {
+			for _, pattern := range entry.Patterns {
+				fmt.Fprintf(&b, "  *%s%s*", prefix, pattern)
+				if entry.Description != "" {
+					fmt.Fprintf(&b, " — %s", entry.Description)
+				}
+				b.WriteString("\n")
 			}
-			fmt.Fprintf(b, ", *%s%s*", prefix, pattern)
+			continue
 		}
+		fmt.Fprintf(&b, "  *%s%s*", prefix, entry.Usage)
 		if entry.Description != "" {
-			fmt.Fprintf(b, " — %s", entry.Description)
+			fmt.Fprintf(&b, " — %s", entry.Description)
 		}
 		b.WriteString("\n")
-		return
 	}
-	fmt.Fprintf(b, "  *%s%s*", prefix, entry.Usage)
-	if entry.Description != "" {
-		fmt.Fprintf(b, " — %s", entry.Description)
+
+	seen := make(map[string]bool)
+	var details []string
+	for _, entry := range entries {
+		for _, line := range entry.Details {
+			line = strings.TrimSpace(line)
+			if line == "" || seen[line] {
+				continue
+			}
+			seen[line] = true
+			details = append(details, line)
+		}
 	}
-	b.WriteString("\n")
+	if len(details) > 0 {
+		b.WriteString("\n")
+		for _, line := range details {
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+	return strings.TrimSpace(truncate(b.String()))
 }
 
 // groups returns the display groups in sorted entry order.
@@ -666,34 +716,6 @@ func groupForTopic(entries []Entry, topic string) string {
 		}
 	}
 	return ""
-}
-
-// renderDetail expands one command, including usage, description, and any
-// satellite patterns or aliases.
-func renderDetail(entry Entry, prefix string) string {
-	var b strings.Builder
-	if len(entry.Patterns) > 0 {
-		for _, pattern := range entry.Patterns {
-			fmt.Fprintf(&b, "*%s%s*\n", prefix, pattern)
-		}
-	} else {
-		fmt.Fprintf(&b, "*%s%s*\n", prefix, entry.Usage)
-	}
-	if entry.Description != "" {
-		b.WriteString(entry.Description)
-		b.WriteString("\n")
-	}
-	if len(entry.Details) > 0 {
-		b.WriteString("\n")
-		for _, line := range entry.Details {
-			if strings.TrimSpace(line) == "" {
-				continue
-			}
-			b.WriteString(line)
-			b.WriteString("\n")
-		}
-	}
-	return strings.TrimSpace(truncate(b.String()))
 }
 
 // truncate caps a help reply without cutting a command in half. It prefers a
