@@ -41,7 +41,9 @@ var expectedSchema = []struct {
 		table: "reminders",
 		columns: []string{
 			"id", "sender", "group_id", "thread_id", "satellite",
-			"text", "due_at", "created_at", "fired_at",
+			"text", "due_at", "created_at", "fired_at", "kind",
+			"weekdays", "at_minutes", "interval_seconds", "remaining",
+			"ends_at", "last_fired_at",
 		},
 	},
 	{

@@ -88,11 +88,12 @@ type MaintainerConfig struct {
 }
 
 type UserConfig struct {
-	Prefixes     []string          `json:"prefixes"`
-	Timezone     string            `json:"timezone"`
-	Muted        bool              `json:"muted"`
-	SatelliteIDs map[string]string `json:"satellite_ids"`
-	Aliases      Aliases           `json:"aliases"`
+	Prefixes       []string          `json:"prefixes"`
+	Timezone       string            `json:"timezone"`
+	Muted          bool              `json:"muted"`
+	RecurringLimit string            `json:"recurring_limit,omitempty"`
+	SatelliteIDs   map[string]string `json:"satellite_ids"`
+	Aliases        Aliases           `json:"aliases"`
 }
 
 type Aliases struct {

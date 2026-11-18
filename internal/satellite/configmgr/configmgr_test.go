@@ -346,6 +346,63 @@ func TestConfigSetCommand(t *testing.T) {
 			},
 		},
 		{
+			name:   "recurring limit count",
+			sender: userPhone,
+			text:   "config set recurring_limit 5 times",
+			check: func(t *testing.T, root string) {
+				var user config.UserConfig
+				if err := json.Unmarshal(readUserFile(t, root, userPhone), &user); err != nil {
+					t.Fatalf("decode user: %v", err)
+				}
+				if user.RecurringLimit != "5 times" {
+					t.Fatalf("recurring_limit = %q, want \"5 times\"", user.RecurringLimit)
+				}
+			},
+		},
+		{
+			name:   "recurring limit singular normalized",
+			sender: userPhone,
+			text:   "config set recurring_limit 1 time",
+			check: func(t *testing.T, root string) {
+				var user config.UserConfig
+				if err := json.Unmarshal(readUserFile(t, root, userPhone), &user); err != nil {
+					t.Fatalf("decode user: %v", err)
+				}
+				if user.RecurringLimit != "1 time" {
+					t.Fatalf("recurring_limit = %q, want \"1 time\"", user.RecurringLimit)
+				}
+			},
+		},
+		{
+			name:   "recurring limit forever stores null",
+			sender: userPhone,
+			text:   "config set recurring_limit forever",
+			check: func(t *testing.T, root string) {
+				var doc map[string]any
+				if err := json.Unmarshal(readUserFile(t, root, userPhone), &doc); err != nil {
+					t.Fatalf("decode user: %v", err)
+				}
+				value, ok := doc["recurring_limit"]
+				if !ok || value != nil {
+					t.Fatalf("recurring_limit = %#v, want null", value)
+				}
+			},
+		},
+		{
+			name:           "invalid recurring limit rejected",
+			sender:         userPhone,
+			text:           "config set recurring_limit sometimes",
+			wantStatus:     http.StatusBadRequest,
+			unchangedPhone: userPhone,
+		},
+		{
+			name:           "zero recurring limit rejected",
+			sender:         userPhone,
+			text:           "config set recurring_limit 0 times",
+			wantStatus:     http.StatusBadRequest,
+			unchangedPhone: userPhone,
+		},
+		{
 			name:   "prefixes comma separated",
 			sender: userPhone,
 			text:   "config set prefixes !,/",
@@ -787,6 +844,7 @@ func TestConfigList(t *testing.T) {
 			"timezone = America/Chicago",
 			"prefixes = !",
 			"muted = false (default)",
+			"recurring_limit = forever (default)",
 			"aliases.satellites.wind = wind-predictor",
 			"aliases.commands.w = fly",
 			`Send "!config get <key>" for one setting.`,
@@ -829,6 +887,7 @@ func TestConfigList(t *testing.T) {
 			"timezone = UTC (default)",
 			"prefixes = ! (default)",
 			"muted = false (default)",
+			"recurring_limit = forever (default)",
 			"aliases = (none)",
 			`Send "!config get @` + otherPhone + ` <key>" for one setting.`,
 		}, "\n")
@@ -888,6 +947,27 @@ func TestConfigGet(t *testing.T) {
 		want := strings.Join([]string{
 			"muted = false (default)",
 			"Set with: !config set @" + otherPhone + " muted false",
+		}, "\n")
+		if got := recorder.last(t); got != want {
+			t.Fatalf("get =\n%s\nwant:\n%s", got, want)
+		}
+	})
+
+	t.Run("recurring limit default is marked", func(t *testing.T) {
+		_, cfg, _ := newTestConfig(t)
+		manager, recorder := readManager(t, cfg)
+
+		if err := manager.Handle(sdk.Transmission{
+			Trigger: "config",
+			Text:    "config get recurring_limit",
+			Sender:  userPhone,
+		}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+
+		want := strings.Join([]string{
+			"recurring_limit = forever (default)",
+			"Set with: !config set recurring_limit forever",
 		}, "\n")
 		if got := recorder.last(t); got != want {
 			t.Fatalf("get =\n%s\nwant:\n%s", got, want)
@@ -986,6 +1066,7 @@ func TestConfigExport(t *testing.T) {
 			"!config set timezone America/Chicago",
 			"!config set prefixes !",
 			"!config set muted false",
+			"!config set recurring_limit forever",
 			"!config set aliases.satellites.wind wind-predictor",
 			"!config set aliases.commands.w fly",
 		}, "\n")

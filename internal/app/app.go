@@ -211,6 +211,13 @@ func Run(ctx context.Context, opts Options) error {
 			}
 			return cfg.Users[phone].Timezone
 		},
+		RecurringLimit: func(principal string) string {
+			cfg := snapshot.Load()
+			if cfg == nil {
+				return ""
+			}
+			return cfg.Users[principal].RecurringLimit
+		},
 	})
 	// Re-arm reminders that survived a restart. Overdue rows fire on the next
 	// scheduler tick, so a deploy delays a reminder instead of dropping it.
@@ -476,6 +483,32 @@ func builtins(configManager *configmgr.Manager, adminManager *adminmgr.Manager, 
 		}
 	}
 
+	remind := withReactionFor(
+		wrap("remind", "remind", auth.User, "👍", "Reminder set.", testManager.HandleRemind),
+		func(text string) string {
+			if testsat.ReminderCommand(text, "remind") == "list" {
+				return ""
+			}
+			return "👍"
+		},
+	)
+	remind.SuccessTextFor = func(text string) string {
+		if testsat.ReminderCommand(text, "remind") == "cancel" {
+			return "Reminder cancelled."
+		}
+		return "Reminder set."
+	}
+	reminders := withReactionFor(
+		wrap("remind", "reminders", auth.User, "", "", testManager.HandleReminders),
+		func(text string) string {
+			if testsat.ReminderCommand(text, "reminders") == "cancel" {
+				return "👍"
+			}
+			return ""
+		},
+	)
+	reminders.SuccessText = "Reminder cancelled."
+
 	return []router.Builtin{
 		withReactionFor(
 			wrap("config", "config", auth.User, "👍", "Configuration updated.", configManager.Handle),
@@ -488,8 +521,8 @@ func builtins(configManager *configmgr.Manager, adminManager *adminmgr.Manager, 
 		wrap("approve", "approve", auth.Maintainer, "👍", "Approved.", adminManager.HandleApprove),
 		wrap("deny", "deny", auth.Maintainer, "👍", "Denied.", adminManager.HandleDeny),
 		wrap("pending", "pending", auth.Maintainer, "", "", adminManager.HandlePending),
-		wrap("remind", "remind", auth.User, "👍", "Reminder set.", testManager.HandleRemind),
-		wrap("remind", "reminders", auth.User, "", "", testManager.HandleReminders),
+		remind,
+		reminders,
 		wrap("test", "test", auth.User, "", "", testManager.HandleTest),
 		wrap("help", "help", auth.User, "", "", helpManager.HandleHelp),
 	}
@@ -534,23 +567,31 @@ func helpCommands() []helpsat.Entry {
 			Role:        auth.User,
 			Details: []string{
 				"Absolute form: remind me <text> at <datetime>",
+				"Recurring: remind me <text> every day at 09:00",
+				"Recurring: remind me <text> every weekday at 07:30",
+				"Recurring: remind me <text> every monday at 09:00",
+				"Recurring: remind me <text> every 2 hours",
+				`Limit a series with "10 times" or "until 2027-01-01".`,
 				"Units: seconds, minutes, hours, days (s, min, h, d).",
 				"Times: 2026-11-08 09:00, 09:00, Monday 09:00, or RFC3339.",
+				"Recurring times: 09:00, 7:30pm, or 7 pm.",
 				"Times use your configured timezone; past times are rejected.",
 				`Send "reminders" to list what is still pending.`,
+				`Send "remind cancel <id>" to remove one.`,
 			},
 		},
 		{
 			Name:        "reminders",
 			Trigger:     "reminders",
 			Usage:       "reminders",
-			Description: "List pending reminders",
+			Description: "List or cancel reminders",
 			Role:        auth.User,
 			Details: []string{
 				"Shows reminders that have not fired yet, soonest first.",
 				"Each line starts with the reminder id.",
+				"Recurring reminders show their rule in brackets.",
 				"In a group, lists the group's reminders; in a direct chat, yours.",
-				`"remind list" is a shorthand for the same list.`,
+				`"remind list" lists them and "reminders cancel <id>" removes one.`,
 			},
 		},
 		{
@@ -564,8 +605,9 @@ func helpCommands() []helpsat.Entry {
 				"config get [@phone] <key> — show one setting.",
 				"config export [@phone] — pasteable config set lines.",
 				"config set [@phone] <key> <value> — change a setting.",
-				"Keys: timezone, prefixes, muted, aliases.",
+				"Keys: timezone, prefixes, muted, recurring_limit, aliases.",
 				`Use "config set prefixes []" for no command prefix.`,
+				`Set recurring_limit to "5 times" or "forever".`,
 				"Admins can target another user with @<phone>.",
 				"Satellite settings: <satellite> config set <key> <value>.",
 				`Example: "wind config set alert_schedule.nightly_local 21:45".`,

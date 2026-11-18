@@ -331,6 +331,26 @@ func (s *Store) migrate() error {
 		tx.Rollback()
 		return fmt.Errorf("store: migrate: %w", err)
 	}
+	// Reminders gained recurrence columns. Older rows keep kind = '' and are
+	// treated as one-shot reminders.
+	reminderColumns := []struct {
+		name  string
+		alter string
+	}{
+		{"kind", `ALTER TABLE reminders ADD COLUMN kind TEXT NOT NULL DEFAULT ''`},
+		{"weekdays", `ALTER TABLE reminders ADD COLUMN weekdays INTEGER NOT NULL DEFAULT 0`},
+		{"at_minutes", `ALTER TABLE reminders ADD COLUMN at_minutes INTEGER NOT NULL DEFAULT 0`},
+		{"interval_seconds", `ALTER TABLE reminders ADD COLUMN interval_seconds INTEGER NOT NULL DEFAULT 0`},
+		{"remaining", `ALTER TABLE reminders ADD COLUMN remaining INTEGER NOT NULL DEFAULT -1`},
+		{"ends_at", `ALTER TABLE reminders ADD COLUMN ends_at TEXT NOT NULL DEFAULT ''`},
+		{"last_fired_at", `ALTER TABLE reminders ADD COLUMN last_fired_at TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, column := range reminderColumns {
+		if err := addColumnIfMissing(tx, "reminders", column.name, column.alter); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("store: migrate: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit migrations: %w", err)
 	}
@@ -424,15 +444,22 @@ var migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_patches_phone ON patches (phone)`,
 
 	`CREATE TABLE IF NOT EXISTS reminders (
-		id         INTEGER PRIMARY KEY,
-		sender     TEXT NOT NULL,
-		group_id   TEXT NOT NULL DEFAULT '',
-		thread_id  TEXT NOT NULL DEFAULT '',
-		satellite  TEXT NOT NULL DEFAULT '',
-		text       TEXT NOT NULL,
-		due_at     TEXT NOT NULL,
-		created_at TEXT NOT NULL,
-		fired_at   TEXT NOT NULL DEFAULT ''
+		id               INTEGER PRIMARY KEY,
+		sender           TEXT NOT NULL,
+		group_id         TEXT NOT NULL DEFAULT '',
+		thread_id        TEXT NOT NULL DEFAULT '',
+		satellite        TEXT NOT NULL DEFAULT '',
+		text             TEXT NOT NULL,
+		due_at           TEXT NOT NULL,
+		created_at       TEXT NOT NULL,
+		fired_at         TEXT NOT NULL DEFAULT '',
+		kind             TEXT NOT NULL DEFAULT '',
+		weekdays         INTEGER NOT NULL DEFAULT 0,
+		at_minutes       INTEGER NOT NULL DEFAULT 0,
+		interval_seconds INTEGER NOT NULL DEFAULT 0,
+		remaining        INTEGER NOT NULL DEFAULT -1,
+		ends_at          TEXT NOT NULL DEFAULT '',
+		last_fired_at    TEXT NOT NULL DEFAULT ''
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_reminders_due_at ON reminders (due_at)`,
 	`CREATE INDEX IF NOT EXISTS idx_reminders_fired_at ON reminders (fired_at)`,

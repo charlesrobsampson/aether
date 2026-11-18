@@ -495,6 +495,16 @@ func buildLocalPatch(existing []byte, key, raw string) ([]sdk.Operation, error) 
 		}
 		return []sdk.Operation{{Op: "add", Path: "/muted", Value: muted}}, nil
 
+	case key == "recurring_limit":
+		limit, err := parseRecurringLimit(raw)
+		if err != nil {
+			return nil, err
+		}
+		if limit == "" {
+			return []sdk.Operation{{Op: "add", Path: "/recurring_limit", Value: nil}}, nil
+		}
+		return []sdk.Operation{{Op: "add", Path: "/recurring_limit", Value: limit}}, nil
+
 	case strings.HasPrefix(key, "aliases.satellites."):
 		return buildAliasPatch(existing, "satellites", strings.TrimPrefix(key, "aliases.satellites."), raw)
 
@@ -508,6 +518,27 @@ func buildLocalPatch(existing []byte, key, raw string) ([]sdk.Operation, error) 
 	default:
 		return nil, statusError(http.StatusBadRequest, "config: key %q is not user-editable", key)
 	}
+}
+
+// parseRecurringLimit normalizes a configured repeat count. An empty string or
+// "forever" means unlimited, which is stored as JSON null.
+func parseRecurringLimit(raw string) (string, error) {
+	value := strings.ToLower(strings.Join(strings.Fields(unquote(raw)), " "))
+	switch value {
+	case "", "forever", "never", "unlimited", "none":
+		return "", nil
+	}
+	fields := strings.Fields(value)
+	if len(fields) == 2 && (fields[1] == "times" || fields[1] == "time") {
+		if count, err := strconv.Atoi(fields[0]); err == nil && count > 0 {
+			if count == 1 {
+				return "1 time", nil
+			}
+			return fmt.Sprintf("%d times", count), nil
+		}
+	}
+	return "", statusError(http.StatusBadRequest,
+		`config: recurring_limit must be "<count> times" or "forever"`)
 }
 
 func buildAliasPatch(existing []byte, group, alias, raw string) ([]sdk.Operation, error) {

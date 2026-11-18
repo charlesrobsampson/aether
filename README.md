@@ -50,8 +50,8 @@ All configuration is JSON under `AETHER_CONFIG_DIR` (default
 - `system.json` holds server, auth, providers, limits, and schedules.
 - `admin.json` is the access-control file (admins, approved/denied numbers and
   groups).
-- `users/<phone>.json` holds per-user prefixes, timezone, mute flag, aliases, and
-  satellite IDs.
+- `users/<phone>.json` holds per-user prefixes, timezone, mute flag, recurring
+  reminder limit, aliases, and satellite IDs.
 - `satellites/<name>.json` declares a satellite's trigger, endpoint, optional
   short `prefix`, and command patterns; `routes.json` is regenerated from these
   files and is never edited by hand.
@@ -75,8 +75,24 @@ persona prefixes for that user; commands are then typed bare, for example
 
 Built-in reminders: `!remind me <text> in <count> <unit>` or `!remind me <text>
 at <datetime>` schedules a one-off message, and `!reminders` lists what is still
-pending (`!remind list` works too). Reminders survive restarts, and one that
-came due while Aether was down is delivered on the next start.
+pending (`!remind list` works too). `!remind cancel <id>` (or `!reminders cancel
+<id>`) removes one. Reminders survive restarts, and one that came due while
+Aether was down is delivered on the next start.
+
+Recurring reminders use the same conversational form:
+
+```
+!remind me walk the dog every weekday at 07:30
+!remind me stretch every monday at 09:00 10 times
+!remind me journal every day at 07:30 until 2027-01-01
+!remind me stand up every 2 hours
+```
+
+A series repeats forever unless it ends with `<count> times` or `until <date>`.
+Set a personal default with `!config set recurring_limit 5 times` (or
+`forever`); it applies only when the command has no explicit limit. Recurring
+times use your live timezone, so moving keeps the same wall-clock time. A
+failed send retries a few times and then stays pending for the next start.
 
 Unprefixed `!config` always means Aether's own settings. Satellite-owned
 settings use the satellite's prefix and mirror the same list/get/export/set

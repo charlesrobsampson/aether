@@ -53,6 +53,9 @@ type Builtin struct {
 	// SuccessText is the fallback acknowledgement sent when SuccessReaction is
 	// set but the provider cannot attach reactions.
 	SuccessText string
+	// SuccessTextFor, when set, chooses the fallback acknowledgement from the
+	// command text. It overrides SuccessText.
+	SuccessTextFor func(text string) string
 }
 
 // Replier sends a text reply back to the conversation an inbound message came

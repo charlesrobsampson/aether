@@ -433,6 +433,9 @@ func NewMessenger(cfg MessengerConfig) (Messenger, error)
   against the injectable clock; `seconds` is therefore supported.
 - Absolute reminders (`at <datetime>`) convert to a single `AfterFunc` at the
   computed instant. Cron is only for repeating schedules.
+- Recurring chat reminders (`every ...`) are computed by the reminder engine in
+  `internal/satellite/testsat` against the user's live timezone. They do not use
+  the cron `schedules` table, which is reserved for satellite triggers.
 - Repeating satellite triggers come from `schedules` in `system.json`:
   `{"name":"morning_fly","cron":"0 7 * * 1-5","satellite":"wind-predictor","command":"fly","args":{"station":"FPS"}}`.
   On fire, Aether dispatches the named command as if the user had sent it,
@@ -545,16 +548,31 @@ send attempt, `send_attempts` is the total attempt count including the first,
   through `/message` (`test received`).
 - `remind` supports relative (`in <num> <unit>`) and absolute (`at <datetime>`)
   schedules via the scheduler.
+- Recurring reminders use a conversational rule:
+  `every day at <time>`, `every weekday at <time>`, `every <weekday> at <time>`,
+  or `every <num> <unit>` (minimum one minute). Times accept `09:00`, `7:30pm`,
+  or `7 pm`.
+- A series repeats forever by default. A trailing `<count> times` or
+  `until <date>` ends it; a bare year in `until` means January 1 of that year.
+  The per-user `recurring_limit` setting (`N times` or `forever`) supplies a
+  default only when the command has no explicit limit.
+- Recurring rules resolve the sender's timezone at each occurrence, so a move
+  keeps the same wall-clock time. A series that missed occurrences while Aether
+  was down fires once late and then resumes at the next future occurrence.
 - A reminder fires exactly one `/message` back to the originating user.
 - `reminders` (or `remind list`) lists the pending reminders for the current
   conversation, soonest first. A group lists the group's reminders; a direct
   chat lists the sender's. The reply is text and starts each line with the
-  reminder id.
+  reminder id; recurring rows show their rule in brackets.
+- `remind cancel <id>` (also `reminders cancel <id>`) deletes one pending
+  reminder owned by the conversation.
 - Reminders are durable: each one is written to the `reminders` table before its
-  timer is armed, and `fired_at` is stamped only after a successful send.
-  Startup re-arms every row with an empty `fired_at`, so a restart or deploy
-  cannot drop a pending reminder and an overdue one fires late instead of
-  disappearing. A failed send stays pending and is retried on the next start.
+  timer is armed, and `fired_at` is stamped only after a successful send (or
+  when a recurring series completes). Startup re-arms every row with an empty
+  `fired_at`, so a restart or deploy cannot drop a pending reminder and an
+  overdue one fires late instead of disappearing. A failed send stays pending
+  and is retried on the next start; recurring sends retry three times, one
+  minute apart, before waiting for that restart.
 
 ### 3.17 Testing & CI
 

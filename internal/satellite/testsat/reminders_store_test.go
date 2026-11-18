@@ -25,6 +25,8 @@ type fakeReminderStore struct {
 	insertErr  error
 	pendingErr error
 	markErr    error
+	advanceErr error
+	cancelErr  error
 }
 
 func newFakeReminderStore() *fakeReminderStore {
@@ -41,6 +43,10 @@ func (f *fakeReminderStore) InsertReminder(_ context.Context, rec store.Reminder
 	rec.ID = f.nextID
 	f.records[rec.ID] = rec
 	return rec.ID, nil
+}
+
+func (f *fakeReminderStore) InsertSchedule(ctx context.Context, rec store.ReminderRecord) (int64, error) {
+	return f.InsertReminder(ctx, rec)
 }
 
 func (f *fakeReminderStore) PendingReminders(_ context.Context) ([]store.ReminderRecord, error) {
@@ -97,6 +103,47 @@ func (f *fakeReminderStore) MarkReminderFired(_ context.Context, id int64, at ti
 	rec.FiredAt = at
 	f.records[id] = rec
 	return nil
+}
+
+func (f *fakeReminderStore) AdvanceReminder(_ context.Context, id int64, nextDue time.Time, remaining int, lastFired time.Time, done bool) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.advanceErr != nil {
+		return false, f.advanceErr
+	}
+	rec, ok := f.records[id]
+	if !ok || !rec.FiredAt.IsZero() {
+		return false, nil
+	}
+	rec.DueAt = nextDue
+	rec.Remaining = remaining
+	rec.LastFiredAt = lastFired
+	if done {
+		rec.FiredAt = lastFired
+	}
+	f.records[id] = rec
+	return true, nil
+}
+
+func (f *fakeReminderStore) CancelReminder(_ context.Context, id int64, principal string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.cancelErr != nil {
+		return false, f.cancelErr
+	}
+	rec, ok := f.records[id]
+	if !ok || !rec.FiredAt.IsZero() {
+		return false, nil
+	}
+	if rec.GroupID != "" {
+		if rec.GroupID != principal {
+			return false, nil
+		}
+	} else if rec.Sender != principal {
+		return false, nil
+	}
+	delete(f.records, id)
+	return true, nil
 }
 
 func (f *fakeReminderStore) only(t *testing.T) store.ReminderRecord {

@@ -229,7 +229,7 @@ type setting struct {
 func settingsFor(cfg *config.Config, phone string) []setting {
 	user := cfg.Users[phone]
 
-	out := make([]setting, 0, 6)
+	out := make([]setting, 0, 7)
 	if timezone := strings.TrimSpace(user.Timezone); timezone != "" {
 		out = append(out, setting{key: "timezone", value: timezone})
 	} else {
@@ -247,6 +247,12 @@ func settingsFor(cfg *config.Config, phone string) []setting {
 		out = append(out, setting{key: "muted", value: "true"})
 	} else {
 		out = append(out, setting{key: "muted", value: "false", note: "default"})
+	}
+
+	if limit := strings.TrimSpace(user.RecurringLimit); limit != "" {
+		out = append(out, setting{key: "recurring_limit", value: limit})
+	} else {
+		out = append(out, setting{key: "recurring_limit", value: "forever", note: "default"})
 	}
 
 	out = appendAliasSettings(out, "satellites", user.Aliases.Satellites)
@@ -348,7 +354,7 @@ func matchSettings(settings []setting, key string) []setting {
 
 func knownKey(key string) bool {
 	switch strings.TrimSpace(key) {
-	case "timezone", "prefixes", "muted", "aliases", "aliases.satellites", "aliases.commands":
+	case "timezone", "prefixes", "muted", "recurring_limit", "aliases", "aliases.satellites", "aliases.commands":
 		return true
 	default:
 		return false
@@ -381,7 +387,7 @@ func renderGet(settings []setting, cfg *config.Config, actor, target, key string
 	if len(matched) == 0 {
 		if !knownKey(key) {
 			return "", statusError(http.StatusBadRequest,
-				"config: unknown key %q. Try: timezone, prefixes, muted, aliases.", key)
+				"config: unknown key %q. Try: timezone, prefixes, muted, recurring_limit, aliases.", key)
 		}
 		return fmt.Sprintf("%s = (none)", strings.TrimSpace(key)), nil
 	}
